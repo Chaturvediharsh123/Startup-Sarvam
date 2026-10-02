@@ -200,4 +200,4 @@ The core assistant is built. Next, it moves from doing tasks to teaching and lea
 
 ## License
 
-[MIT](LICENSE) © 2026 Manav Agarwal
+[MIT](LICENSE) © 2026 
