@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+*.egg-info/
+
+# Secrets and local configuration
+.env
+
+# Runtime data: memory database, vector index, browser profile, evidence, downloads, model cache
+.data/

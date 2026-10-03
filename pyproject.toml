@@ -1,0 +1,48 @@
+[project]
+name = "sarvam-memory-action"
+version = "0.1.0"
+description = "Memory Block and Action Block for the Startup-Sarvam voice-controlled PC assistant"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+]
+
+[project.optional-dependencies]
+# Action Block adapters. Imported lazily, so unit tests run without them.
+actions = [
+    "playwright>=1.45",
+    "pywinauto>=0.6.9; sys_platform == 'win32'",
+    "pyautogui>=0.9.54",
+    "mss>=9.0",
+    "pillow>=10.0",
+    # Built-in Windows OCR for screen targets given as text (Tesseract is an optional alternative).
+    "winrt-runtime>=2.0; sys_platform == 'win32'",
+    "winrt-Windows.Media.Ocr>=2.0; sys_platform == 'win32'",
+    "winrt-Windows.Graphics.Imaging>=2.0; sys_platform == 'win32'",
+    "winrt-Windows.Storage.Streams>=2.0; sys_platform == 'win32'",
+    "winrt-Windows.Globalization>=2.0; sys_platform == 'win32'",
+    "winrt-Windows.Foundation>=2.0; sys_platform == 'win32'",
+    "winrt-Windows.Foundation.Collections>=2.0; sys_platform == 'win32'",
+]
+# Semantic memory. Without it, retrieval falls back to SQLite FTS5 only.
+semantic = [
+    "lancedb>=0.20",
+    "fastembed>=0.5",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.setuptools]
+packages = ["actions", "memory"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-m 'not integration'"
+markers = [
+    "integration: drives a real browser, real Windows apps, or downloads a real embedding model (run with: pytest -m integration)",
+]
