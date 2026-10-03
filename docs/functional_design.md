@@ -45,7 +45,61 @@ One voice command runs through the numbered steps: the planner asks Memory for c
 - **First run** (no workflow yet): `get_workflow` returns nothing, the planner builds the actions itself, and after a verified success the run is saved as a workflow.
 - **Later run:** `get_workflow` returns a match. If it is current, its steps are the starting point, its preconditions are re-checked on the live screen, and the run is appended to its verification history. If it is stale or failing, the planner adapts it instead of replaying it.
 
-## 3. Action Block: capabilities and routing
+## 3. Tech stack
+
+Everything runs locally on the Windows PC with Python libraries; there are no servers, queues or cloud services in either block. Versions are those tested on 2026-10-03 (Python 3.13.14).
+
+| Layer | Technology | Version | Role |
+| --- | --- | --- | --- |
+| Language | Python | 3.13 (needs 3.10+) | Both blocks |
+| Schemas and config | Pydantic, pydantic-settings | 2.10, 2.7 | Action/Memory models, validation, settings from env and `.env` |
+| Concurrency | asyncio + dedicated worker threads | stdlib | Async executor; blocking UI calls on one daemon thread per adapter |
+| Browser | Playwright (Chromium / Chrome) | 1.61 | Navigation, locators, typing, reading, downloads, page screenshots |
+| Windows apps | pywinauto (UI Automation backend), comtypes, pywin32 | 0.6.9, 1.4, 312 | Find windows and controls, click, type, read, close |
+| Visual fallback | PyAutoGUI | 0.9.54 | Mouse and keyboard at screen coordinates; corner fail-safe |
+| Unicode typing | Win32 `SendInput` via ctypes | stdlib | Types Hindi/Devanagari, which PyAutoGUI cannot |
+| Screenshots | mss, Pillow | 10.2, 12.3 | Full-screen and window captures as evidence |
+| OCR | Windows.Media.Ocr via winrt; Tesseract (optional) | 3.2; not installed | Find visible text on screen; Tesseract adds Hindi |
+| Persistent store | SQLite with FTS5 | 3.50 (bundled) | Source of truth for memories, workflows, versions, verification logs; keyword search |
+| Vector index | LanceDB (+ pyarrow) | 0.39 (25.0) | Semantic search index, rebuildable from SQLite |
+| Embeddings | fastembed on onnxruntime | 0.8, 1.30 | Local embeddings without PyTorch |
+| Embedding model | paraphrase-multilingual-MiniLM-L12-v2 | 384 dimensions, about 220 MB | Hindi, English and Hinglish meaning search |
+| Testing | pytest, pytest-asyncio | 8.3, 0.25 | Unit, end-to-end and opt-in integration tests |
+
+**Deliberately not used** (spec section 5): Redis, Kafka, Mem0, LangGraph, a second vector database, Selenium or other browser frameworks, and PyTorch. Nothing in the stack needs a network service; only the one-time model download needs the internet.
+
+## 4. Code structure
+
+Each file has one job; adapters hold only computer-interaction code, and neither package imports the other.
+
+| File | Responsibility |
+| --- | --- |
+| `actions/models.py` | `Action`, `Target`, `Condition`, per-capability parameter models, `Evidence`, `ActionResult` |
+| `actions/registry.py` | The 12 capabilities, shape rules, risk defaults, function-calling tool list |
+| `actions/router.py` | Picks the adapter from the surface; builds the visual-fallback action |
+| `actions/executor.py` | `ActionExecutor` pipeline, retries, timeouts, evidence; `SyncActionExecutor`; `build_default_executor` |
+| `actions/errors.py` | Structured error classes with retryable and side-effect flags |
+| `actions/base.py` | Adapter interface, per-attempt time budget, worker-thread runner with stuck-call recovery |
+| `actions/browser.py` | Playwright adapter |
+| `actions/windows.py` | Windows UI Automation adapter |
+| `actions/screen.py` | Visual adapter, screen capture, Unicode typing |
+| `actions/ocr.py` | OCR engines (Windows, Tesseract) and on-screen text matching |
+| `actions/config.py` | `ActionSettings`, app/key/hotkey allow-lists |
+| `memory/manager.py` | `MemoryManager`: the only public entry point |
+| `memory/models.py` | `Memory`, `MemoryUpdate`, `RetrievedMemory`, freshness rules |
+| `memory/workflow.py` | `Workflow`, steps, conditions, verification history, workflow freshness |
+| `memory/working.py` | In-RAM working memory |
+| `memory/sqlite_store.py` | SQLite schema, FTS5 tables (Hindi-safe tokenizer), version archive |
+| `memory/semantic_store.py` | LanceDB index and the fastembed embedder |
+| `memory/retrieval.py` | Hybrid search, ranking, caveats, `MemoryContext` for the planner |
+| `memory/privacy.py` | Sensitive-data redaction |
+| `memory/evaluation.py` | Retrieval evaluation and threshold tuning (CLI) |
+| `memory/config.py` | `MemorySettings`, ranking weights |
+| `tests/actions/`, `tests/memory/` | Unit tests with fake adapters and a fake embedder; opt-in integration tests |
+| `tests/test_integration.py` | End-to-end first run, later run, failed run |
+| `tests/memory/data/retrieval_eval.json` | 16 memories and 35 labelled queries in English, Hindi and Hinglish |
+
+## 5. Action Block: capabilities and routing
 
 Only 12 registered capabilities can run; there is no capability for Python, shell or PowerShell. The registry also produces the function-calling tool list, so the LLM is only offered actions the executor accepts.
 
@@ -72,9 +126,26 @@ Only 12 registered capabilities can run; there is no capability for Python, shel
 
 **Preconditions and expected outcomes.** Each action can carry conditions: element visible or hidden, text present, URL or title contains, window exists or absent, file exists, download completed, or a free-text `custom` expectation. Preconditions are checked first (optionally waiting up to 60 s); an unmet one stops the action. Expected outcomes are checked after it runs and reported, never used to flip `success`.
 
-## 4. Action Block: execution behaviour
+## 6. Action Block: execution behaviour
 
 `execute()` never raises for action problems: every outcome is an `ActionResult`, so the planner always gets something to decide on. Pipeline: validate → capability check → allow-lists → route → preconditions → run (timeout, retries, fallback) → evidence → expected-outcome checks.
+
+```mermaid
+flowchart TD
+    S1["1 Validate<br/>Pydantic schema and parameters"] --> S2["2 Capability and allow-lists<br/>registered? app, key, hotkey allowed?"]
+    S2 --> S3["3 Route<br/>the target surface picks the adapter"]
+    S3 --> S4["4 Preconditions<br/>checked, waiting up to wait_s"]
+    S4 --> S5["5 Run the adapter<br/>time budget, safe retries, visual fallback"]
+    S5 --> S6["6 Evidence and outcome checks<br/>URL, title, screenshots; expected outcomes"]
+    S6 --> R["ActionResult<br/>always returned: success, or a structured error, plus duration and evidence"]
+    S1 -. "ValidationError (input never echoed)" .-> R
+    S2 -. "UnsupportedActionError / PermissionError" .-> R
+    S3 -. "UnsupportedActionError (no adapter or OCR)" .-> R
+    S4 -. "PreconditionFailedError + screenshot" .-> R
+    S5 -. "TimeoutError / TargetNotFoundError / AdapterError" .-> R
+```
+
+Steps 1–3 fail before anything touches the PC; steps 4–5 attach a failure screenshot; step 6 runs only after the interaction succeeded. Expected outcomes are reported, never used to flip `success`.
 
 **ActionResult fields:** `success`, `action_id`, `action_type`, `output`, `evidence[]`, `error`, `duration_ms`, `retryable`, `attempts`, `adapter`, `risk`, `precondition_checks[]`, `outcome_checks[]`, `started_at`, `finished_at`, plus `expected_outcomes_met` (true / false / unknown).
 
@@ -103,11 +174,11 @@ Only 12 registered capabilities can run; there is no capability for Python, shel
 
 **Safety boundary.** The Action Block enforces schemas, allow-lists and technical limits. It never decides whether a risky action is appropriate: each result carries a `risk` level (low / medium / high) for the safety layer, which owns the spoken confirmation.
 
-## 5. Memory Block: memories and lifecycle
+## 7. Memory Block: memories and lifecycle
 
 A memory is context, not truth: every record says where it came from, how sure we are, and when it was last confirmed. SQLite is the source of truth; nothing outside `MemoryManager` touches storage.
 
-**Types:** `fact`, `preference`, `episode`, `observation`. Workflows are a separate model (section 7).
+**Types:** `fact`, `preference`, `episode`, `observation`. Workflows are a separate model (section 9).
 
 | Field | Meaning |
 | --- | --- |
@@ -134,9 +205,27 @@ A memory is context, not truth: every record says where it came from, how sure w
 
 **Working memory** holds the current task in RAM only and is never persisted: task, application, page, task state, the last 20 conversation turns (so "ab isko band karo" can resolve "isko"), recent observations, recent action results and pending actions. Starting a new task clears task state but keeps conversation turns.
 
-## 6. Retrieval
+## 8. Retrieval
 
 Search combines exact keyword matching and meaning-based matching, ranks with one fixed formula, and drops anything below a relevance threshold rather than padding the context.
+
+```mermaid
+flowchart LR
+    subgraph write [Write path]
+        W1["save, update<br/>MemoryManager"] --> W2["Privacy filter<br/>redact passwords, OTPs, keys, cards"]
+        W2 --> W3["SQLite<br/>records + FTS5, source of truth"]
+        W3 --> W4["LanceDB<br/>embed with MiniLM, rebuildable index"]
+    end
+    subgraph read [Read path]
+        R1["search<br/>query from the planner"] --> R2["FTS5 keyword<br/>exact words"]
+        R1 --> R3["LanceDB semantic<br/>by meaning"]
+        R2 --> R4["Merge<br/>load full records from SQLite"]
+        R3 --> R4
+        R4 --> R5["Rank and filter<br/>score; drop below 0.2; returns with caveats"]
+    end
+```
+
+If LanceDB is missing or fails, search continues on FTS5 alone, and `rebuild_semantic_index()` re-embeds everything from SQLite.
 
 1. **Keyword candidates** from SQLite FTS5. The tokenizer keeps Hindi vowel signs inside words; the default one splits "बिजली" into fragments so "बिल" would wrongly match it. English, Hinglish and Hindi stopwords are ignored. Keyword score = share of the query's meaningful words found in the record (prefix match).
 2. **Semantic candidates** from LanceDB, using `paraphrase-multilingual-MiniLM-L12-v2` (384 dimensions, local, about 220 MB, no PyTorch). Semantic score = cosine similarity rescaled so 0.3 maps to 0.
@@ -156,7 +245,7 @@ Here k is the keyword score, s the semantic score, and the freshness weight is v
 
 **Tuning.** `python -m memory.evaluation <dataset> --tune` scores the ranking on a labelled query set and grid-searches the thresholds. With `MEMORY_RETRIEVAL_LOG_PATH` set, every search is logged with the query redacted, and `record_search_feedback(search_id, used_ids)` records which results the planner actually used; those pairs become new evaluation cases.
 
-## 7. Workflows
+## 9. Workflows
 
 A workflow is a learned procedure, such as "download the electricity bill". It is stored only after a verified successful run and is never replayed blindly.
 
@@ -181,7 +270,7 @@ A workflow is a learned procedure, such as "download the electricity bill". It i
 
 **Replay rules for the planner.** Use `get_workflow(task)` as a starting point only when `is_current`, re-check its preconditions against the live screen, and adapt any step that fails. Steps whose input was a password or other sensitive text are stored with `requires_user_input` instead of the text, so the user must supply it again.
 
-## 8. Privacy and security
+## 10. Privacy and security
 
 The LLM can only reach the computer through 12 validated capabilities, and secrets are removed before anything is written to disk.
 
@@ -201,7 +290,7 @@ The LLM can only reach the computer through 12 validated capabilities, and secre
 
 Working memory (RAM only, current task) is not filtered, so the planner can use an OTP within the task. Runtime data (`.data/`), `.env` and the model cache are git-ignored.
 
-## 9. Integration API
+## 11. Integration API
 
 Other teams use two objects: `ActionExecutor` (async, or `SyncActionExecutor` for the Tk UI thread) and `MemoryManager` (synchronous).
 
@@ -248,7 +337,7 @@ memory.save_workflow({...})                      # after a first verified succes
 - The verifier, not the executor, decides task success from `outcome_checks` and evidence, then reports back to Memory.
 - Results from search are context: quote the caveat when a memory is not `is_confirmed`.
 
-## 10. Configuration
+## 12. Configuration
 
 All settings come from environment variables or `.env` (template: `.env.example`); nothing is hard-coded and no secrets are needed.
 
@@ -270,10 +359,36 @@ All settings come from environment variables or `.env` (template: `.env.example`
 | `MEMORY_EMBEDDING_MODEL` / `MEMORY_EMBEDDING_CACHE_DIR` | multilingual MiniLM / `~/.cache/sarvam-memory/models` | Local embedding model, cached outside the repo |
 | `MEMORY_STALE_AFTER_DAYS` / `MEMORY_WORKFLOW_STALE_AFTER_DAYS` | 90 / 30 | Freshness windows |
 | `MEMORY_MIN_RELEVANCE` / `MEMORY_SEMANTIC_MIN_SIMILARITY` | 0.2 / 0.3 | Relevance filter (tuned) |
-| `MEMORY_RANKING` | see section 6 | Ranking weights (JSON) |
+| `MEMORY_RANKING` | see section 8 | Ranking weights (JSON) |
 | `MEMORY_RETRIEVAL_LOG_PATH` | off | Opt-in search log for tuning |
 
-## 11. Testing and quality
+## 13. Setup and running
+
+A new Windows machine needs one install command, one browser install, and about 220 MB downloaded automatically on first search.
+
+1. Install Python 3.10+ (tested on 3.13) and clone the repo; switch to branch `memory_action`.
+2. Install the packages with extras: `pip install -e ".[actions,semantic,dev]"`.
+3. Install a browser for Playwright: `playwright install chromium`, or use installed Chrome with `ACTIONS_BROWSER_CHANNEL=chrome`.
+4. Copy `.env.example` to `.env` and adjust paths, the app allow-list and the browser channel. No API keys are needed.
+5. Optional, for Hindi on-screen OCR: install Tesseract with the Hindi language data and set `ACTIONS_TESSERACT_CMD` if it is not on PATH.
+6. First run: the embedding model downloads to `~/.cache/sarvam-memory/models`; the first UI Automation call is slow unless `executor.warm_up()` runs at start-up.
+
+| Task | Command |
+| --- | --- |
+| Unit tests (no browser, desktop or model) | `pytest` |
+| Integration tests (real browser, model, OCR) | `pytest -m integration` |
+| Desktop tests (moves the mouse, opens Notepad) | `pytest -m integration -k "notepad or live_ocr"` |
+| Retrieval quality and tuning | `python -m memory.evaluation tests/memory/data/retrieval_eval.json --tune` |
+| Tune on real usage | set `MEMORY_RETRIEVAL_LOG_PATH`, then `python -m memory.evaluation --from-log <log>` |
+
+**Troubleshooting**
+
+- Search returns only keyword matches: `lancedb` or `fastembed` is missing, or `MEMORY_SEMANTIC_ENABLED=false`; run `rebuild_semantic_index()` after changing the model.
+- `UnsupportedActionError` naming OCR: install the winrt OCR packages (in the `actions` extra) or Tesseract.
+- Visible browser does not appear: it was started from a non-interactive session; run the app from a desktop terminal.
+- Every action fails with `PermissionError` after the mouse hit a corner: that is PyAutoGUI's fail-safe; move the mouse away and retry.
+
+## 14. Testing and quality
 
 175 unit tests pass, and 4 of the 6 integration tests pass; the other two need a run from a real desktop session.
 
@@ -297,7 +412,7 @@ Run with `pytest` (unit, about 13 s) and `pytest -m integration`. Unit tests use
 
 On queries where nothing is relevant, 5 of 6 correctly return nothing. A regression test fails if overall top-3 recall drops below 82% or that rejection rate below 80%.
 
-## 12. Known limitations and next steps
+## 15. Known limitations and next steps
 
 The blocks are complete against the spec; what remains is integration work by other teams and a few deliberate gaps.
 
