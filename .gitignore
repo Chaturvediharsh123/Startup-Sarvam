@@ -1,4 +1,11 @@
 .env
+.venv/
 venv/
 __pycache__/
-logs/
+*.pyc
+data/
+*.db
+logs/*.log
+logs/*.log.*
+.pytest_cache/
+.ruff_cache/

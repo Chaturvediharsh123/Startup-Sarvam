@@ -1,0 +1,24 @@
+# Tool configuration only. This project is not packaged.
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [".venv", "data", "logs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "SIM"]
+ignore = [
+    "S101",  # assert is fine in tests
+    "S603",  # subprocess without shell: we always pass fixed argument lists
+    "S606",  # os.startfile is the documented way to open files on Windows
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S", "B"]
+# Pre-existing files written by the user: lint style nits are left for them to fix.
+"language/{detector,normalizer,pipeline,types}.py" = ["I001", "W292", "UP045", "B033"]
+"language/test_{detector,normalizer,pipeline,types}.py" = ["S", "W292"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "language"]
+addopts = "-p no:cacheprovider"
