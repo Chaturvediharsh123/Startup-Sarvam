@@ -1,0 +1,13 @@
+requests
+python-dotenv
+pyautogui
+pyperclip
+psutil
+pycaw
+comtypes
+sounddevice
+numpy
+scipy
+websockets
+customtkinter
+pytest

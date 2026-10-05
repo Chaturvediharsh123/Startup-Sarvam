@@ -1,0 +1,31 @@
+<!--
+  Windows Sandbox config for testing the assistant in a throwaway copy of Windows.
+
+  BEFORE USE: change HostFolder below to the full path of YOUR project folder,
+  e.g. C:\Users\YourName\Desktop\Startup-Sarvam
+
+  The project folder is mapped READ-ONLY, so nothing inside the sandbox can change
+  your real files. The database, logs and notes are written inside the sandbox
+  and disappear when it closes.
+
+  Double-click this file to start. See sandbox\README.md.
+-->
+<Configuration>
+  <Networking>Enable</Networking>
+  <AudioInput>Enable</AudioInput>
+  <VideoInput>Disable</VideoInput>
+  <ClipboardRedirection>Enable</ClipboardRedirection>
+  <PrinterRedirection>Disable</PrinterRedirection>
+  <ProtectedClient>Disable</ProtectedClient>
+  <MemoryInMB>4096</MemoryInMB>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>C:\Users\YOUR_NAME\Desktop\oss\Startup-Sarvam</HostFolder>
+      <SandboxFolder>C:\Users\WDAGUtilityAccount\Desktop\Startup-Sarvam</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <LogonCommand>
+    <Command>powershell.exe -NoExit -ExecutionPolicy Bypass -File C:\Users\WDAGUtilityAccount\Desktop\Startup-Sarvam\sandbox\sandbox_setup.ps1</Command>
+  </LogonCommand>
+</Configuration>
