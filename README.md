@@ -104,24 +104,26 @@ The AI can only do what it has permission to do, and it asks before anything ris
 
 ### Built into the code (always on)
 
-Every action goes through one function, `assistant/safety.py: execute()`. It applies these checks in order:
+The brain can only *name* one action per sentence. The orchestrator then sends it through the safety guard (`safety/guard.py`) before the action runner (`actions/runner.py`) may run it:
 
 | Step | Guard | What happens |
 |---|---|---|
-| 1 | Allow-list | Only functions registered in `assistant/actions.py` can run. Anything else is `blocked`. The AI can never run shell commands, and no command string is ever built from AI output. |
-| 2 | Argument check | Arguments must match the action's JSON schema: types, fixed choices (`enum`), ranges and required fields. Extra fields are rejected. Failures are an `error`. |
+| 1 | Allow-list | Only actions listed in `config/allowlist.yaml` (owned by Safety) can run. Anything else is denied and the reply says so. The AI can never run shell commands, and no command string is ever built from AI output. |
+| 2 | Argument check | Arguments must match the action's JSON schema and the allow-list rules: allowed apps (with aliases such as "crome", "नोटपैड"), safe shortcuts, number ranges and text lengths. Failures are denied. |
 | 3 | Rate limit | At most `MAX_ACTIONS_PER_MINUTE` (default 10) actions per minute, so a looping AI cannot spam the PC. |
-| 4 | Spoken confirmation | Closing apps, locking and shutting down need a clear "haan", "हाँ", "yes", "சரி", etc. Any "no" word, silence, a question or noise counts as no (`denied`). The action function is never called without that yes. |
-| 5 | Honest replies | If an action was denied, blocked or failed, the spoken reply says so. The assistant never says "done" when nothing happened. |
-| 6 | Action log | Every attempt is written to `logs/actions.log` and to the `actions` table in the database. |
+| 4 | Risk level | Low = run. Medium (typing, shortcuts) = run and log. High (close app, lock, shutdown) = spoken question first. Only a clear "haan", "हाँ", "yes", "aam", "avunu", "ho" counts. Anything else, silence or 10 s (`CONFIRM_TIMEOUT_S`) is no. |
+| 5 | Timeout | Every action runs off the main thread with a 5 s timeout (`ACTION_TIMEOUT_S`) and never crashes the assistant. |
+| 6 | Honest replies | If an action was denied, blocked, timed out or failed, the spoken reply says so ("Photoshop installed nahi hai"). The assistant never says "done" when nothing happened. |
+| 7 | Audit log | Every request, decision and result is written with its turn id to `logs/audit.jsonl`, shown in the window's safety log, and stored in memory for "isko" follow-ups. |
 
 Also always on:
 
-- **Limited keys:** keyboard shortcuts come from a fixed safe list (save, copy, paste, undo, …). Alt+F4 and Win+R are not on it.
-- **Delayed shutdown:** shutdown waits 60 seconds (`SHUTDOWN_DELAY_S`) and can be cancelled by voice ("shutdown cancel karo").
-- **Emergency stop:** moving the mouse to a screen corner stops all automation (pyautogui failsafe).
+- **Limited keys:** shortcuts come from a safe list. Alt+F4, Win+R, Win+L, Ctrl+Alt+Del and Delete combos are blocked.
+- **Delayed shutdown:** shutdown waits at least 60 seconds and can be cancelled by voice ("shutdown cancel karo").
+- **Emergency stop:** moving the mouse to a screen corner stops all automation until the next command.
+- **Stop words:** "ruko", "bas", "stop", "रुको" and their equivalents in other languages interrupt the assistant at any time.
 - **No self-hearing:** the mic is muted while the assistant speaks and for 300 ms after.
-- **Never kills Explorer:** `close_app` only knows a fixed list of apps, and the file manager is not on it.
+- **Red-team tested:** `tests/redteam/redteam.yaml` holds 75 tricky commands ("sab files delete karo", "cmd kholo aur format karo", …). The tests prove none of them can run.
 
 ### Sandbox for testing new, riskier abilities
 
@@ -171,7 +173,7 @@ copy .env.example .env
 notepad .env                             # put your key in SARVAM_API_KEY=
 ```
 
-All settings live in `.env`. See `.env.example` for the full list: voice, wake word, models, timeouts and paths.
+Settings live in `config/settings.yaml` (one section per workstream). The API key lives only in `.env`, and any line in `.env` overrides the YAML. `config/allowlist.yaml` holds the safety allow-list: actions, risk levels, allowed apps and their aliases, and safe shortcuts.
 
 > Live mode streams audio continuously and uses Sarvam credits. Turn it off when you do not need it. When it is off, the WebSocket is closed.
 
@@ -184,21 +186,25 @@ All settings live in `.env`. See `.env.example` for the full list: voice, wake w
 | `python main.py --no-ui` | Terminal only, live listening. Ctrl+C quits. |
 | `python main.py --no-ui --ptt` | Terminal only, hold **F8** to talk. |
 | `python main.py --text` | Type commands instead of speaking. Good for testing without a mic. |
-| `python main.py --mock` | **No API key needed.** Window with a typing box. Keyword rules stand in for Sarvam (`sarvam/mock.py`). Real actions, safety checks and memory still run. |
+| `python main.py --mock` | **No API key needed.** Window with a typing box. Keyword rules stand in for Sarvam (`brain/fake.py`). Real actions, safety checks and memory still run. |
 | `python main.py --mock --text` | Same, in the terminal. |
 | `--debug` | Add to any mode for detailed logs. |
 
 In mock mode, replies are printed with a `[voice]` prefix. They are also spoken with the offline Windows voice if you `pip install pyttsx3`. Live listening and push-to-talk are off, because both need Sarvam speech-to-text. Mock mode understands only fixed phrases such as "notepad kholo", "isko band karo", "volume 30", "mera naam X hai", "battery", "application likho" and "pc band karo". Anything else gets "Mock mode: samajh nahi aaya".
 
-**F9** stops the assistant mid-sentence in every voice mode.
+**F9**, **Esc**, the Stop button or saying **"ruko"** / **"stop"** stops the assistant at once: speech, a pending yes/no question and any action not yet started. Moving the mouse into a screen corner is the emergency stop: actions stay blocked until you give a new command.
 
 ### Run the tests
 
 ```powershell
 pip install -r requirements-dev.txt
-python -m pytest -q
+python -m pytest -q                      # unit, integration, red-team and golden-set schema tests
 ruff check .
+python tools/golden_eval.py              # tool-choice accuracy on 197 utterances (needs the API key)
+python tools/golden_eval.py --fake       # same harness with the offline keyword fake
 ```
+
+CI (`.github/workflows/ci.yml`) runs ruff and pytest on every pull request.
 
 The tests never shut down, lock, close apps, type or change the volume on your PC. All of that is mocked. They also never call the Sarvam API.
 
@@ -233,28 +239,35 @@ Say them in any supported language. These are examples; the AI understands many 
 
 ## Adding a new ability
 
-A new ability is one function plus one decorator in `assistant/actions.py`:
+A new ability is one function in the right `actions/` file plus one entry in `config/allowlist.yaml`:
 
 ```python
+# actions/system.py
 @action(
     "Open the Downloads folder.",          # description the AI reads
     params={},                              # JSON-schema properties; use "enum" for fixed choices
-    required=[],
-    risky=False,                            # True = ask for a spoken yes first
-    informational=False,                    # True = result goes back to the AI to phrase an answer
+    required=(),
+    risk="low",                             # low | medium | high (high = spoken yes first)
+    fact=lambda result: "opened downloads", # short fact used to phrase the reply
 )
 def open_downloads() -> str:
     _startfile(str(Path.home() / "Downloads"))
     return "Opened Downloads"
 ```
 
-That is all. The tool schema is built automatically, and the safety gate validates arguments and logs every call. Rules:
+```yaml
+# config/allowlist.yaml (Safety owns this file; changes need their review)
+actions:
+  open_downloads: {risk: low, args: {}}
+```
+
+That is all. The LLM's tool list is generated from the registry, and the guard checks every call against the allow-list. Rules:
 
 - Never use `shell=True`, and never build a command string from AI-supplied text. Pass fixed argument lists.
 - Use `enum` for any fixed set of choices.
 - Import Windows-only libraries inside the function so the tests run anywhere.
-- Mark anything that closes, deletes or changes system state `risky=True`, add a confirmation phrase in `language/phrases.py` (`confirm_<name>`), and test it in the sandbox first.
-- Add a test in `tests/test_actions.py` with the side effect mocked.
+- Mark anything that closes, deletes or changes system state `risk="high"`, add a confirmation phrase in `language/phrases.py` (`confirm_<name>`) and a result template, and run it in the sandbox first.
+- Add a unit test in `tests/unit/actions/` with the side effect mocked, a red-team case if it can be misused, and golden-set lines in `tests/golden/utterances.yaml`.
 
 ## Database
 
@@ -295,16 +308,26 @@ Or open the file in [DB Browser for SQLite](https://sqlitebrowser.org/).
 ## Project layout
 
 ```
-main.py                 entry point and terminal modes
-assistant/              config, logging, memory, actions, safety, brain, pipeline
-sarvam/                 HTTP client, LLM, realtime + REST STT, TTS
-audio/                  microphone, speaker, wake word
-language/               script detection, yes/no words, canned replies
-ui/app.py               the window
-sandbox/                Windows Sandbox config + VM guide
-tests/                  pytest suite (everything mocked)
-docs/                   Sarvam API notes and build plan
+main.py                 entry point: builds the bus, wires modules, starts UI or terminal mode
+config/                 settings.yaml (per-workstream settings) + allowlist.yaml (safety)
+core/                   shared contracts: events, interfaces, event bus, state machine,
+                        orchestrator, config, logging (owner: tech lead)
+audio/      WS1         microphone, speaker, resampler, fakes
+stt/        WS2         realtime + batch Saaras clients, local end-of-speech, wake word, fakes
+brain/      WS3         sarvam-105b client, prompts, tool list, memory, fakes
+actions/    WS4         action registry + 16 actions, runner with timeouts, fake
+safety/     WS5         guard, confirmation, emergency stop, audit log
+tts/        WS6         Bulbul streaming with sentence prefetch, text cleaner, fakes
+ui/         WS7         the window: widgets, themes, Hindi/English labels
+language/               script/language detection, phrases in 8 languages
+sarvam/                 shared HTTP client (auth, timeouts, retries)
+tests/unit/<module>/    each owner's tests        tests/integration/  end-to-end with fakes
+tests/redteam/          75 tricky commands         tests/golden/       197 golden utterances
+tools/golden_eval.py    golden-set accuracy and latency report
+docs/                   architecture notes, decisions (ADRs), build report
 ```
+
+Each module folder has its own README: what it does, events in and out, settings it reads and how to run its fake. See [docs/BUILD_REPORT.md](docs/BUILD_REPORT.md) for how the code maps to the architecture document.
 
 ## Roadmap
 

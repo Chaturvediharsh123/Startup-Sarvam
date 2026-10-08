@@ -1,5 +1,7 @@
 # Build plan: Startup-Sarvam voice PC assistant
 
+> **Superseded.** This was the plan for the first build (single `assistant/` package). The code now follows the architecture template; see [BUILD_REPORT.md](BUILD_REPORT.md).
+
 Status: built (phases 1–11). Real-API checks are pending until an API key is added; see README "Getting started".
 API facts: see [sarvam_api_notes.md](sarvam_api_notes.md).
 

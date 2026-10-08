@@ -79,5 +79,5 @@ A virtual machine keeps its state between runs. **Snapshots** let you roll back 
 ## What to test in a sandbox first
 
 - Any new action that closes programs, deletes, moves or overwrites files, or changes settings.
-- Changes to the allow-lists (`APPS`, `PROCESS_NAMES`, `SAFE_HOTKEYS`) in `assistant/actions.py`.
-- Changes to the safety rules in `assistant/safety.py`.
+- Changes to the allow-list (`config/allowlist.yaml`: actions, risk levels, apps, safe shortcuts).
+- Changes to the safety rules in `safety/` (guard, confirmation, emergency stop).
