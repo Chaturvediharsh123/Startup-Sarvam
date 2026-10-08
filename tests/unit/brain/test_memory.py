@@ -171,7 +171,7 @@ def test_migration_on_existing_db(tmp_path: Path) -> None:
         assert m.recent_messages(all_sessions=True)[0]["content"] == "keep me"
     conn = sqlite3.connect(db)
     versions = [r[0] for r in conn.execute("SELECT version FROM schema_version")]
-    assert versions == [SCHEMA_VERSION]
+    assert versions == list(range(1, SCHEMA_VERSION + 1))
     conn.close()
 
 
@@ -181,12 +181,41 @@ def test_migration_runs_new_steps(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     db = tmp_path / "v.db"
     with Memory(db) as m:
         m.remember("city", "Delhi")
+    nxt = SCHEMA_VERSION + 1
     monkeypatch.setitem(
-        memory_mod.MIGRATIONS, 2, lambda c: c.execute("ALTER TABLE facts ADD COLUMN source TEXT")
+        memory_mod.MIGRATIONS, nxt, lambda c: c.execute("ALTER TABLE facts ADD COLUMN source TEXT")
     )
     conn = sqlite3.connect(db)
-    assert migrate(conn, target=2) == 2
+    assert migrate(conn, target=nxt) == nxt
     cols = [r[1] for r in conn.execute("PRAGMA table_info(facts)")]
     assert "source" in cols
     assert conn.execute("SELECT value FROM facts WHERE key='city'").fetchone()[0] == "Delhi"
     conn.close()
+
+
+def test_v2_migration_allows_timeout_and_cancelled(tmp_path: Path) -> None:
+    import brain.memory as memory_mod
+
+    db = tmp_path / "v1.db"
+    conn = sqlite3.connect(db)
+    migrate(conn, target=1)  # an old database with the v1 CHECK constraint
+    conn.execute("INSERT INTO sessions (started_at) VALUES ('2026-01-01T10:00:00')")
+    conn.execute(
+        "INSERT INTO actions (session_id, name, args, result, status, created_at) "
+        "VALUES (1, 'open_app', '{\"name\": \"chrome\"}', 'Opened chrome', 'ok', 'x')"
+    )
+    conn.commit()
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO actions (session_id, name, args, status, created_at) "
+            "VALUES (1, 'x', '{}', 'timeout', 'x')"
+        )
+    conn.close()
+    with Memory(db) as m:
+        m.log_action("open_app", {"name": "paint"}, "slow", "timeout", 5000)
+        m.log_action("open_app", {"name": "paint"}, "stopped", "cancelled")
+        rows = m._query("SELECT name, status FROM actions ORDER BY id")
+    assert [tuple(r) for r in rows] == [
+        ("open_app", "ok"), ("open_app", "timeout"), ("open_app", "cancelled"),
+    ]
+    assert {"timeout", "cancelled"} <= set(memory_mod.ACTION_STATUSES)

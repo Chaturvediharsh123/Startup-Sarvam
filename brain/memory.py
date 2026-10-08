@@ -19,8 +19,8 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
-ACTION_STATUSES = ("ok", "error", "denied", "blocked")
+SCHEMA_VERSION = 2
+ACTION_STATUSES = ("ok", "error", "denied", "blocked", "timeout", "cancelled")
 
 _SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -56,9 +56,31 @@ CREATE TABLE IF NOT EXISTS facts (
 );
 """
 
+# v2: the actions.status CHECK also allows 'timeout' and 'cancelled'. SQLite cannot alter
+# a CHECK constraint, so the table is rebuilt and every row copied across.
+_SCHEMA_V2 = """
+CREATE TABLE actions_v2 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    args TEXT NOT NULL,
+    result TEXT,
+    status TEXT NOT NULL
+        CHECK (status IN ('ok', 'error', 'denied', 'blocked', 'timeout', 'cancelled')),
+    duration_ms INTEGER,
+    created_at TEXT NOT NULL
+);
+INSERT INTO actions_v2 (id, session_id, name, args, result, status, duration_ms, created_at)
+    SELECT id, session_id, name, args, result, status, duration_ms, created_at FROM actions;
+DROP TABLE actions;
+ALTER TABLE actions_v2 RENAME TO actions;
+CREATE INDEX IF NOT EXISTS idx_actions_session ON actions(session_id, id);
+"""
+
 # version -> function that upgrades the schema from (version - 1) to version.
 MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     1: lambda conn: conn.executescript(_SCHEMA_V1),
+    2: lambda conn: conn.executescript(_SCHEMA_V2),
 }
 
 

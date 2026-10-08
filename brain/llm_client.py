@@ -1,18 +1,56 @@
 """Chat Completions with tool calling (``POST /v1/chat/completions``).
 
-Request and response shapes follow docs/sarvam_api_notes.md, section 3.
+Request and response shapes follow docs/sarvam_api_notes.md, section 3. Every request
+has a hard deadline (``settings.llm_timeout_s``): the shared HTTP client has no
+per-request timeout, so the call runs on a short-lived worker thread and a
+:class:`SarvamError` is raised when the deadline passes.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Protocol
+import threading
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 from sarvam.client import SarvamClient, SarvamError
+
+if TYPE_CHECKING:
+    from core.config import Settings
 
 logger = logging.getLogger(__name__)
 
 CHAT_PATH = "/v1/chat/completions"
+TIMEOUT_CODE = "llm_timeout"
+
+T = TypeVar("T")
+
+
+def call_with_timeout(func: Callable[[], T], timeout_s: float | None) -> T:
+    """Run ``func`` with a deadline; raise :class:`SarvamError` if it is not done in time.
+
+    The worker is a daemon thread: a request that hangs past the deadline is
+    abandoned (its late answer is ignored) and never blocks shutdown.
+    """
+    if not timeout_s or timeout_s <= 0:
+        return func()
+    box: dict[str, Any] = {}
+    done = threading.Event()
+
+    def run() -> None:
+        try:
+            box["value"] = func()
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the caller's thread
+            box["error"] = exc
+        finally:
+            done.set()
+
+    threading.Thread(target=run, name="llm-request", daemon=True).start()
+    if not done.wait(timeout_s):
+        raise SarvamError(f"LLM did not answer within {timeout_s:g} s", code=TIMEOUT_CODE)
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
 
 
 class ChatModel(Protocol):
@@ -33,6 +71,8 @@ class SarvamLLM:
         model: ``sarvam-105b`` or ``sarvam-105b-conversations``.
         reasoning: ``low``/``medium``/``high``/``max``, or ``none`` to turn thinking off.
         max_tokens: completion budget; reasoning tokens count against it.
+        temperature: low (0.2) so tool choice is stable.
+        timeout_s: hard deadline per request; ``None`` or 0 waits for the HTTP client.
     """
 
     def __init__(
@@ -42,12 +82,24 @@ class SarvamLLM:
         reasoning: str = "low",
         max_tokens: int = 1024,
         temperature: float = 0.2,
+        timeout_s: float | None = None,
     ) -> None:
         self.client = client
         self.model = model
         self.reasoning = reasoning
         self.max_tokens = max_tokens
         self.temperature = temperature
+        self.timeout_s = timeout_s
+
+    @classmethod
+    def from_settings(cls, client: SarvamClient, settings: Settings) -> SarvamLLM:
+        """Build the LLM from :class:`core.config.Settings` (model, reasoning, timeout)."""
+        return cls(
+            client,
+            settings.llm_model,
+            reasoning=settings.llm_reasoning,
+            timeout_s=settings.llm_timeout_s,
+        )
 
     def build_payload(
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None
@@ -71,9 +123,11 @@ class SarvamLLM:
         """Send one chat request and return the assistant message.
 
         Raises:
-            SarvamError: on API failure or a malformed response.
+            SarvamError: on API failure, a malformed response, or when the request
+                takes longer than :attr:`timeout_s` (``code == "llm_timeout"``).
         """
-        body = self.client.post_json(CHAT_PATH, self.build_payload(messages, tools))
+        payload = self.build_payload(messages, tools)
+        body = call_with_timeout(lambda: self.client.post_json(CHAT_PATH, payload), self.timeout_s)
         try:
             choice = body["choices"][0]
             message = dict(choice["message"])

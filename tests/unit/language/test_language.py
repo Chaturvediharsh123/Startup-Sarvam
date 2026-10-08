@@ -12,7 +12,7 @@ from language.detect import (
     to_realtime_stt_code,
     to_tts_language,
 )
-from language.phrases import PHRASES, phrase
+from language.phrases import PHRASES, is_stop_command, phrase
 
 
 @pytest.mark.parametrize(
@@ -98,3 +98,54 @@ def test_phrases_fallbacks() -> None:
 def test_every_phrase_has_english() -> None:
     for table in PHRASES.values():
         assert "en" in table
+
+
+NEW_KEYS = (
+    "filler", "working", "cancelled", "interrupted", "timeout", "not_installed", "not_running",
+    "not_allowed", "remembered", "forgot", "opened", "closed", "volume_set", "volume_muted",
+    "volume_unmuted", "searched", "youtube_searched", "typed", "screenshot_saved", "status",
+    "status_no_battery", "time", "note_saved", "locked", "shutdown_scheduled",
+    "shutdown_cancelled", "no_shutdown",
+)
+VALUES = {"app": "Chrome", "level": 40, "query": "news", "battery": 80, "cpu": 10,
+          "memory": 50, "time": "10:30", "date": "today", "delay": 60, "name": "x"}
+
+
+def test_new_phrases_cover_main_languages() -> None:
+    for key in NEW_KEYS:
+        for lang in ("en", "hi", "hi-latn", "ta", "te"):
+            assert lang in PHRASES[key], (key, lang)
+
+
+def test_every_template_formats() -> None:
+    for key, table in PHRASES.items():
+        for lang, template in table.items():
+            assert template.format(**VALUES), (key, lang)
+
+
+def test_result_templates() -> None:
+    assert phrase("opened", "hi-IN", app="Chrome") == "Chrome खुल गया।"
+    assert phrase("opened", "hi-IN", romanised=True, app="Chrome") == "Chrome khul gaya."
+    assert phrase("volume_set", "en-IN", level=40) == "Volume is now 40 percent."
+    assert phrase("cancelled", "hi-IN", romanised=True) == "Theek hai, cancel kar diya."
+    assert phrase("filler", "hi-IN", romanised=True) == "Ek second..."
+    assert phrase("not_allowed", "en-IN") == phrase("blocked", "en-IN")
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["ruko", "Ruko!", "ruk jao", "bas", "bas karo", "stop", "Stop please", "please stop",
+     "band karo", "रुको", "रुक जाओ", "चुप", "बस करो", "நிறுத்து", "ఆపు", "ಸಾಕು", "থামো",
+     "ruko ji", "bas bas", "ruk jao ruk jao"],
+)
+def test_stop_commands(text: str) -> None:
+    assert is_stop_command(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["", None, "Chrome band karo", "please", "ji", "stop the music and open chrome now",
+     "bus stop kahan hai", "ruko mat chrome kholo", "notepad kholo", "बंद"],
+)
+def test_not_stop_commands(text: str | None) -> None:
+    assert not is_stop_command(text)
