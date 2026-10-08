@@ -110,3 +110,48 @@ def test_logging_setup_twice_does_not_duplicate(tmp_path: Path) -> None:
     finally:
         shutdown_logging()
     assert (tmp_path / "app.log").read_text(encoding="utf-8").count("once") == 1
+
+
+# -- settings.yaml (PDF: one section per workstream) ---------------------------------
+
+
+def test_settings_yaml_sections_and_precedence(tmp_path: Path) -> None:
+    yaml_file = tmp_path / "settings.yaml"
+    yaml_file.write_text(
+        "brain:\n  history_turns: 6\nui:\n  ui_theme: high_contrast\n"
+        "tts:\n  tts_voices:\n    hi-IN: priya\n    ta-IN: kavitha\n",
+        encoding="utf-8",
+    )
+    env = tmp_path / ".env"
+    env.write_text("SARVAM_API_KEY=sk_abc\nHISTORY_TURNS=5\n", encoding="utf-8")
+    s = load_settings(env_file=env, settings_file=yaml_file)
+    assert s.history_turns == 5  # .env beats settings.yaml
+    assert s.ui_theme == "high_contrast"
+    assert s.voice_for("ta-IN") == "kavitha"
+    assert _load(TTS_VOICES="ta:kavya").voice_for("ta-IN") == "kavya"  # base-language key
+    assert s.voice_for(None) == s.tts_speaker
+    assert s.voice_for("bn-IN") == s.tts_speaker
+
+
+def test_api_key_is_refused_in_settings_yaml(tmp_path: Path) -> None:
+    yaml_file = tmp_path / "settings.yaml"
+    yaml_file.write_text("sarvam:\n  sarvam_api_key: sk_leak\n", encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_settings(env_file=None, overrides={"SARVAM_API_KEY": "sk_abc"},
+                      settings_file=yaml_file)
+
+
+def test_bad_voice_mapping_and_theme_are_rejected() -> None:
+    with pytest.raises(ConfigError):
+        _load(TTS_VOICES="hi-IN")
+    with pytest.raises(ConfigError):
+        _load(UI_THEME="neon")
+
+
+def test_project_settings_yaml_loads() -> None:
+    from core.config import SETTINGS_FILE
+
+    s = load_settings(env_file=None, overrides={"SARVAM_API_KEY": "sk_abc"},
+                      settings_file=SETTINGS_FILE)
+    assert s.confirm_timeout_s == 10.0 and s.history_turns == 4
+    assert s.voice_for("hi-IN") == "priya"

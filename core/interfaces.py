@@ -96,6 +96,9 @@ class Brain(Protocol):
     def record_turn(self, user_text: str, reply: str, language: str) -> None:
         """Save the finished turn to conversation memory."""
 
+    def record_action(self, outcome: ActionResult) -> None:
+        """Remember an action outcome, so "isko" / "it" can refer to it next turn."""
+
 
 class ActionRunner(Protocol):
     """WS4: list tools for the LLM, run one approved tool call."""

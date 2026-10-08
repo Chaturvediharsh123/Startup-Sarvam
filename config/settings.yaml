@@ -16,6 +16,7 @@ audio:
   sample_rate: 16000               # Sarvam realtime STT accepts 8000 or 16000 only
   chunk_ms: 100
   mic_device: ""                   # empty = default mic; or a device index / name
+  speaker_device: ""               # empty = default speaker; or a device index / name
   noise_gate: 0.0                  # 0.0-1.0; chunks quieter than this count as silence
   barge_in: false                  # true keeps the mic open while speaking (headphones only)
 

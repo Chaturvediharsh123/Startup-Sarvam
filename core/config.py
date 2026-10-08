@@ -48,6 +48,7 @@ class Settings:
     chunk_ms: int = 100
     vad_silence_ms: int = 500
     mic_device: str = ""
+    speaker_device: str = ""
     history_turns: int = 4
     wake_word: str = ""
     confirm_timeout_s: float = 10.0
@@ -256,6 +257,7 @@ def load_settings(
         chunk_ms=_as_int(raw, "CHUNK_MS", 100, 20, 500),
         vad_silence_ms=_as_int(raw, "VAD_SILENCE_MS", 500, 100, 5000),
         mic_device=raw.get("MIC_DEVICE", "").strip(),
+        speaker_device=raw.get("SPEAKER_DEVICE", "").strip(),
         history_turns=_as_int(raw, "HISTORY_TURNS", 4, 0, 100),
         wake_word=raw.get("WAKE_WORD", "").strip(),
         confirm_timeout_s=_as_float(raw, "CONFIRM_TIMEOUT_S", 10.0, 1.0, 60.0),
