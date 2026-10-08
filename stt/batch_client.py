@@ -1,7 +1,8 @@
 """Push-to-talk / fallback speech-to-text (``POST /speech-to-text``).
 
 Sends a short WAV recording with ``saaras:v4`` and ``language_code=unknown`` for
-automatic language detection. The API accepts at most 30 seconds per request.
+automatic language detection, or the configured ``language_hint`` when one is set.
+The API accepts at most 30 seconds per request.
 See docs/sarvam_api_notes.md, section 2.
 """
 
@@ -12,6 +13,8 @@ import logging
 import wave
 
 from core.config import Settings
+from core.interfaces import Health
+from language.detect import normalise_code
 from sarvam.client import SarvamClient
 
 logger = logging.getLogger(__name__)
@@ -32,11 +35,18 @@ def pcm_to_wav(pcm: bytes, sample_rate: int) -> bytes:
 
 
 class RestSTT:
-    """Transcribes one recording and detects its language."""
+    """Transcribes one recording and detects its language.
+
+    Attributes:
+        language_hint: language code to request instead of auto-detect (``unknown``);
+            starts as ``settings.language_hint`` and may be changed at any time.
+    """
 
     def __init__(self, client: SarvamClient, settings: Settings) -> None:
         self.client = client
         self.settings = settings
+        self.language_hint = settings.language_hint
+        self.last_error = ""
 
     def transcribe(self, pcm: bytes, sample_rate: int) -> tuple[str, str | None]:
         """Return ``(transcript, language_code)`` for 16-bit mono PCM audio.
@@ -49,10 +59,22 @@ class RestSTT:
             pcm = pcm[-max_bytes:]
         if len(pcm) < sample_rate // 5 * 2:  # under 0.2 s: nothing useful said
             return "", None
-        result = self.client.post_multipart(
-            STT_PATH,
-            data={"model": self.settings.stt_model, "language_code": "unknown"},
-            files={"file": ("speech.wav", pcm_to_wav(pcm, sample_rate), "audio/wav")},
-        )
+        hint = normalise_code(self.language_hint)
+        try:
+            result = self.client.post_multipart(
+                STT_PATH,
+                data={"model": self.settings.stt_model, "language_code": hint or "unknown"},
+                files={"file": ("speech.wav", pcm_to_wav(pcm, sample_rate), "audio/wav")},
+            )
+        except Exception as exc:
+            self.last_error = str(exc)
+            raise
+        self.last_error = ""
         text = str(result.get("transcript") or "").strip()
-        return text, result.get("language_code")
+        return text, result.get("language_code") or hint
+
+    def health(self) -> Health:
+        """Red after the last request failed."""
+        if self.last_error:
+            return Health("stt_batch", False, self.last_error)
+        return Health("stt_batch", True, "ready")

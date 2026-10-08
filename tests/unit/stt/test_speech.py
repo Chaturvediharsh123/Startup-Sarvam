@@ -1,14 +1,12 @@
-"""Tests for Sarvam TTS and STT clients with fake HTTP and fake WebSockets."""
+"""Tests for the Sarvam STT clients with fake HTTP and fake WebSockets."""
 
 from __future__ import annotations
 
 import asyncio
 import base64
-import io
 import json
 import struct
 import threading
-import wave
 from typing import Any
 
 import httpx
@@ -18,104 +16,10 @@ from core.config import Settings
 from sarvam.client import SarvamClient
 from stt.batch_client import RestSTT, pcm_to_wav
 from stt.realtime_client import FatalSTTError, RealtimeSTT
-from tts.stream_client import SarvamTTS, _pcm_chunks, split_sentences, wav_data_offset, wav_to_pcm
-
-
-def wav_bytes(pcm: bytes, rate: int = 24000) -> bytes:
-    buffer = io.BytesIO()
-    with wave.open(buffer, "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(rate)
-        w.writeframes(pcm)
-    return buffer.getvalue()
 
 
 def client_for(handler: Any) -> SarvamClient:
     return SarvamClient("sk_test", transport=httpx.MockTransport(handler), sleep=lambda s: None)
-
-
-# -- TTS ---------------------------------------------------------------------------
-
-
-def test_split_sentences() -> None:
-    text = "नमस्ते। मैं आपकी मदद करूँगा। Notepad khul gaya! Kya aur kuch chahiye?"
-    parts = split_sentences(text)
-    assert parts[0].startswith("नमस्ते। मैं")  # short first piece merged with the next
-    assert "".join(parts).replace(" ", "") == text.replace(" ", "")
-    long = " ".join(["word"] * 300)
-    assert all(len(p) <= 450 for p in split_sentences(long))
-    assert split_sentences("   ") == []
-
-
-def test_wav_header_detection() -> None:
-    wav = wav_bytes(b"\x01\x00" * 10)
-    assert wav_data_offset(wav) == 44
-    assert wav_data_offset(b"\x01\x02\x03\x04" * 4) == 0
-    assert wav_data_offset(b"RIF") is None
-    assert wav_data_offset(wav[:20]) is None
-
-
-def test_pcm_chunks_strip_header_and_align() -> None:
-    pcm = bytes(range(200))
-    wav = wav_bytes(pcm)
-    pieces = [wav[:10], wav[10:47], wav[47:101], wav[101:]]
-    out = list(_pcm_chunks(iter(pieces)))
-    assert b"".join(out) == pcm
-    assert all(len(c) % 2 == 0 for c in out)
-
-
-def test_pcm_chunks_raw_pcm_passthrough() -> None:
-    assert b"".join(_pcm_chunks(iter([b"\x01\x02\x03", b"\x04"]))) == b"\x01\x02\x03\x04"
-
-
-def test_tts_stream_payload(settings: Settings) -> None:
-    seen: list[dict[str, Any]] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(json.loads(request.content))
-        assert request.url.path == "/text-to-speech/stream"
-        return httpx.Response(200, content=b"\x00\x01" * 50)
-
-    tts = SarvamTTS(client_for(handler), settings)
-    audio = b"".join(tts.stream("नमस्ते, नोटपैड खुल गया है।", "hi-IN"))
-    assert audio == b"\x00\x01" * 50
-    body = seen[0]
-    assert body["model"] == "bulbul:v3"
-    assert body["output_audio_codec"] == "linear16"
-    assert body["speech_sample_rate"] == 24000
-    assert body["language_code"] == "hi-IN"
-    assert body["speaker"] == settings.tts_speaker
-
-
-def test_tts_maps_unsupported_language(settings: Settings) -> None:
-    seen: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(json.loads(request.content)["language_code"])
-        return httpx.Response(200, content=b"\x00\x00")
-
-    list(SarvamTTS(client_for(handler), settings).stream("hello", "or-IN"))
-    list(SarvamTTS(client_for(handler), settings).stream("hello", "sat-IN"))
-    assert seen == ["od-IN", "en-IN"]
-
-
-def test_tts_rest_fallback(settings: Settings) -> None:
-    pcm = b"\x05\x00" * 3000
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/text-to-speech/stream":
-            return httpx.Response(400, json={"error": {"message": "bad"}})
-        assert json.loads(request.content)["output_audio_codec"] == "wav"
-        return httpx.Response(200, json={"audios": [base64.b64encode(wav_bytes(pcm)).decode()]})
-
-    audio = b"".join(SarvamTTS(client_for(handler), settings).stream("hello there", "en-IN"))
-    assert audio == pcm
-
-
-def test_wav_to_pcm() -> None:
-    pcm, rate = wav_to_pcm(wav_bytes(b"\x01\x00" * 4, 16000))
-    assert pcm == b"\x01\x00" * 4 and rate == 16000
 
 
 # -- REST STT ----------------------------------------------------------------------

@@ -1,23 +1,22 @@
-"""Tests for the mute flag, microphone callback, player and wake word (no sound devices)."""
+"""Tests for the mute flag, microphone callback and player (no sound devices)."""
 
 from __future__ import annotations
 
 import struct
 import threading
+import time
 from typing import Any
-
-import pytest
 
 from audio.mic import Microphone, MuteFlag, level_of, parse_device
 from audio.speaker import AudioPlayer
-from stt.wake_word import strip_wake_word, wake_variants
 
 
 class FakeStream:
-    """Records writes instead of playing audio."""
+    """Records writes instead of playing audio; ``write_s`` simulates a blocking device."""
 
-    def __init__(self) -> None:
+    def __init__(self, write_s: float = 0.0) -> None:
         self.written: list[bytes] = []
+        self.write_s = write_s
         self.started = self.stopped = self.aborted = self.closed = False
 
     def start(self) -> None:
@@ -25,6 +24,8 @@ class FakeStream:
 
     def write(self, data: bytes) -> None:
         self.written.append(data)
+        if self.write_s:
+            time.sleep(self.write_s)
 
     def stop(self) -> None:
         self.stopped = True
@@ -78,6 +79,7 @@ def test_mic_queue_full_does_not_raise() -> None:
     mic = Microphone(16000, 100, MuteFlag(), max_queue=1)
     mic._callback(b"a\x00", 1, None, None)
     mic._callback(b"b\x00", 1, None, None)
+    assert mic.dropped == 1
     mic.drain()
     assert mic.read(0.01) is None
 
@@ -103,6 +105,15 @@ def test_player_plays_and_mutes_mic() -> None:
     assert not mute.is_muted
 
 
+def test_player_keeps_mic_muted_for_unmute_delay() -> None:
+    mute = MuteFlag()
+    player = AudioPlayer(24000, mute, unmute_delay_s=0.25, stream_factory=lambda sr: FakeStream())
+    player.play(iter([b"\x00\x00" * 10]))
+    assert mute.is_muted  # echo tail protection
+    time.sleep(0.3)
+    assert not mute.is_muted
+
+
 def test_player_stop_interrupts() -> None:
     stream = FakeStream()
     player = AudioPlayer(24000, stream_factory=lambda sr: stream)
@@ -122,46 +133,111 @@ def test_player_stop_interrupts() -> None:
 
 def test_player_no_audio_never_opens_stream() -> None:
     opened: list[int] = []
-    player = AudioPlayer(24000, stream_factory=lambda sr: opened.append(sr) or FakeStream())
+    finished: list[bool] = []
+    player = AudioPlayer(24000, stream_factory=lambda sr: opened.append(sr) or FakeStream(),
+                         on_finish=finished.append)
     assert player.play(iter(())) is True
     assert opened == []
+    assert finished == []  # no SpeakStarted, so no SpeakFinished either
 
 
 def test_player_is_speaking_during_play() -> None:
-    gate = threading.Event()
     states: list[bool] = []
     player = AudioPlayer(24000, stream_factory=lambda sr: FakeStream())
 
     def chunks() -> Any:
         states.append(player.is_speaking)
-        gate.set()
         yield b"\x00\x00"
 
     player.play(chunks())
     assert states == [True]
 
 
-@pytest.mark.parametrize(
-    "text, expected",
-    [
-        ("Sarvam, notepad kholo", "notepad kholo"),
-        ("hey sarvam Volume 30 kar do", "Volume 30 kar do"),
-        ("सर्वम नोटपैड खोलो", "नोटपैड खोलो"),
-        ("ok सर्वम्, क्रोम खोलो।", "क्रोम खोलो।"),
-        ("Sarvam", ""),
-        ("notepad kholo", None),
-        ("the sarvam app", None),
-    ],
-)
-def test_wake_word(text: str, expected: str | None) -> None:
-    assert strip_wake_word(text, "sarvam") == expected
+def test_player_start_and_finish_callbacks() -> None:
+    events: list[Any] = []
+    player = AudioPlayer(24000, stream_factory=lambda sr: FakeStream(),
+                         on_start=lambda: events.append("start"),
+                         on_finish=lambda interrupted: events.append(("finish", interrupted)))
+    player.play(iter([b"\x00\x00" * 10, b"\x00\x00" * 10]))
+    assert events == ["start", ("finish", False)]
 
 
-def test_wake_word_off_passes_through() -> None:
-    assert strip_wake_word("Notepad kholo", "") == "Notepad kholo"
+def test_player_closes_source_generator() -> None:
+    closed: list[bool] = []
+
+    def chunks() -> Any:
+        try:
+            while True:
+                yield b"\x00\x00" * 100
+        finally:
+            closed.append(True)
+
+    player = AudioPlayer(24000, stream_factory=lambda sr: FakeStream())
+    source = chunks()
+
+    def stop_soon() -> None:
+        time.sleep(0.05)
+        player.stop()
+
+    threading.Thread(target=stop_soon).start()
+    assert player.play(source) is False
+    assert closed == [True]  # TTS prefetch behind the generator is told to stop
 
 
-def test_wake_variants_custom_list() -> None:
-    variants = wake_variants("Dost, दोस्त")
-    assert {"dost", "दोस्त"} <= variants
-    assert strip_wake_word("दोस्त गाना चलाओ", "dost,दोस्त") == "गाना चलाओ"
+def test_player_stop_within_100ms() -> None:
+    """Interrupt stops playback in < 100 ms even with a blocking 50 ms device write."""
+    finished: list[bool] = []
+    player = AudioPlayer(24000, stream_factory=lambda sr: FakeStream(write_s=0.05),
+                         on_finish=finished.append)
+
+    def endless() -> Any:
+        while True:
+            yield b"\x00\x00" * 2400
+
+    result: list[bool] = []
+    thread = threading.Thread(target=lambda: result.append(player.play(endless())))
+    thread.start()
+    time.sleep(0.3)
+    assert player.is_speaking
+    started = time.monotonic()
+    player.stop()
+    thread.join(1.0)
+    elapsed = time.monotonic() - started
+    assert result == [False]
+    assert elapsed < 0.1
+    assert finished == [True]
+
+
+def test_player_stop_cancels_source_waiting_for_network() -> None:
+    """A source with ``cancel()`` (a TTS stream) is cancelled even while blocked."""
+
+    class BlockingSource:
+        def __init__(self) -> None:
+            self.cancelled = threading.Event()
+            self.sent = False
+
+        def __iter__(self) -> BlockingSource:
+            return self
+
+        def __next__(self) -> bytes:
+            if not self.sent:
+                self.sent = True
+                return b"\x00\x00" * 100
+            self.cancelled.wait(5.0)  # "waiting for the next TTS chunk"
+            raise StopIteration
+
+        def cancel(self) -> None:
+            self.cancelled.set()
+
+    source = BlockingSource()
+    player = AudioPlayer(24000, stream_factory=lambda sr: FakeStream())
+    result: list[bool] = []
+    thread = threading.Thread(target=lambda: result.append(player.play(source)))
+    thread.start()
+    time.sleep(0.1)
+    started = time.monotonic()
+    player.stop()
+    thread.join(1.0)
+    assert result == [False]
+    assert time.monotonic() - started < 0.1
+    assert source.cancelled.is_set()
