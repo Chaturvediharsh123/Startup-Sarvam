@@ -1,5 +1,10 @@
 """Script and language detection for transcripts and typed text.
 
+This is the single public language API (re-exported by :mod:`language`). Brain,
+STT and TTS import ``detect_language``, ``detect_script``, ``LanguageInfo``,
+``normalise_code``, ``to_tts_language`` and ``to_realtime_stt_code`` from here.
+:mod:`language.detector` is an internal Hinglish word-list helper.
+
 Detects the writing script from Unicode ranges and maps it to a Sarvam BCP-47
 code. Romanised Hindi (Hinglish) maps to ``hi-IN`` using the vocabulary in
 :mod:`language.detector`. A language code returned by speech-to-text always wins
@@ -97,6 +102,22 @@ def _code_for_script(script: str) -> str | None:
     return None
 
 
+# Common Roman-script Hindi words missing from the V1 list in ``detector.py`` that
+# show up in short voice commands and answers ("sab bhool jao", "ruko", "haan ji").
+EXTRA_HINGLISH_WORDS = frozenset({
+    "haan", "haanji", "ji", "nahi", "nahin", "ruko", "rukiye", "ruk", "jao", "jaao",
+    "bhool", "bhul", "sab", "kuch", "kya", "kaise", "kitna", "kitni", "kitne", "batao",
+    "bataiye", "dikhao", "chalao", "suno", "sunao", "aur", "bhi", "abhi", "isko", "usko",
+    "ise", "mujhe", "mera", "meri", "aap", "theek", "accha", "achha", "pakka",
+    "bas", "kam", "zyada", "jyada", "upar", "neeche", "niche",
+})
+
+
+def _looks_hinglish(text: str) -> bool:
+    words = {w.strip(".,!?;:'\"").lower() for w in text.split()}
+    return bool(words & EXTRA_HINGLISH_WORDS)
+
+
 def detect_language(
     text: str, stt_language: str | None = None, default: str = "hi-IN"
 ) -> LanguageInfo:
@@ -111,7 +132,8 @@ def detect_language(
     code = normalise_code(stt_language)
     if code is None:
         if script == "latin":
-            code = "hi-IN" if detect_v1_language(text) == "hi-en" else "en-IN"
+            hinglish = detect_v1_language(text) == "hi-en" or _looks_hinglish(text)
+            code = "hi-IN" if hinglish else "en-IN"
         else:
             code = _code_for_script(script) or default
     romanised = script == "latin" and code != "en-IN"

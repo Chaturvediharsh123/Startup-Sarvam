@@ -1,6 +1,12 @@
-from dataclasses import dataclass
-from typing import Literal, Optional
+"""Data types for the V1 Hindi/English language pipeline (internal; see ``language_spec.md``).
 
+Public language detection lives in :mod:`language.detect` (``LanguageInfo``).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Literal
 
 Language = Literal["en", "hi", "hi-en"]
 Script = Literal["latin", "devanagari", "mixed", "unknown"]
@@ -13,7 +19,7 @@ class LanguageInput:
     """
 
     text: str
-    confidence: Optional[float] = None
+    confidence: float | None = None
 
 
 @dataclass
@@ -28,4 +34,4 @@ class LanguageResult:
     language: Language
     script: Script
 
-    confidence: Optional[float] = None
+    confidence: float | None = None

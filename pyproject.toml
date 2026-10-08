@@ -15,9 +15,6 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S", "B"]
-# Pre-existing files written by the user: lint style nits are left for them to fix.
-"language/{detector,normalizer,pipeline,types}.py" = ["I001", "W292", "UP045", "B033"]
-"tests/unit/language/test_{detector,normalizer,pipeline,types}.py" = ["S", "W292"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

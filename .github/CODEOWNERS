@@ -1,0 +1,39 @@
+# Code owners (PDF "Git rules"). The last matching pattern wins.
+# PRs into main need 1 review and green CI; changes to core/ need the tech lead.
+# TODO: replace the placeholder comments below with real GitHub handles once owners are confirmed.
+
+# Default: tech lead reviews anything not owned more specifically.
+*                         @Chaturvediharsh123
+
+# Frozen contracts: events, interfaces, bus, orchestrator, config. Tech lead only.
+/core/                    @Chaturvediharsh123
+
+# WS2 speech-to-text and audio capture.
+# TODO: STT owner handle
+/stt/                     @Chaturvediharsh123
+/audio/                   @Chaturvediharsh123
+
+# WS3 brain, memory and language.
+# TODO: brain/memory owner handle (Memory + Action blocks)
+/brain/                   @Chaturvediharsh123
+/language/                @Chaturvediharsh123
+/tests/golden/            @Chaturvediharsh123
+
+# WS4 actions.
+# TODO: actions owner handle
+/actions/                 @Chaturvediharsh123
+
+# WS5 safety: guard, allow-list, red-team list, sandbox.
+# TODO: safety owner handle - must review every change below.
+/safety/                  @Chaturvediharsh123
+/config/allowlist.yaml    @Chaturvediharsh123
+/sandbox/                 @Chaturvediharsh123
+
+# WS6 text-to-speech and UI.
+# TODO: TTS / UI owner handles
+/tts/                     @Chaturvediharsh123
+/ui/                      @Chaturvediharsh123
+
+# Process files.
+/.github/                 @Chaturvediharsh123
+/docs/decisions/          @Chaturvediharsh123
