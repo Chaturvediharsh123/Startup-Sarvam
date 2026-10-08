@@ -14,7 +14,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from assistant.config import Settings, get_settings, load_settings
+from core.config import Settings, get_settings, load_settings
 
 
 @pytest.fixture(autouse=True)
@@ -84,7 +84,7 @@ def fake_volume(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
 @pytest.fixture
 def no_side_effects(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock]:
     """Block every call that could change the PC: processes, browser, files opening."""
-    import assistant.actions as actions
+    import actions.registry as actions
 
     mocks = {
         "popen": MagicMock(name="Popen"),

@@ -1,6 +1,6 @@
 """Yes/no vocabularies and short canned replies in several Indian languages.
 
-The yes/no lists drive :func:`assistant.safety.is_yes`. Canned replies are used
+The yes/no lists drive :func:`safety.guard.is_yes`. Canned replies are used
 when the LLM gives no text or cannot be reached.
 
 Phrase keys use the base language (``hi``, ``ta``, …). ``hi-latn`` is Hinglish

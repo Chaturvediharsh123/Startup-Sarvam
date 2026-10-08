@@ -16,9 +16,9 @@ from typing import Any
 
 import customtkinter as ctk
 
-from assistant.config import Settings
-from assistant.pipeline import Pipeline, PipelineEvent
-from assistant.safety import ActionResult
+from core.config import Settings
+from core.orchestrator import Pipeline, PipelineEvent
+from safety.guard import ActionResult
 
 logger = logging.getLogger(__name__)
 

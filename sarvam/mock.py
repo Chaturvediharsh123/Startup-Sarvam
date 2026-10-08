@@ -18,14 +18,14 @@ import re
 from collections.abc import Callable, Iterator
 from typing import Any
 
-from assistant.actions import PROCESS_NAMES
-from assistant.memory import Memory
+from actions.registry import PROCESS_NAMES
+from brain.memory import Memory
 
 logger = logging.getLogger(__name__)
 
 UNKNOWN_REPLY = "Mock mode: samajh nahi aaya"
 
-# Spoken/typed app names -> keys of assistant.actions.APPS
+# Spoken/typed app names -> keys of actions.registry.APPS
 APP_WORDS: dict[str, tuple[str, ...]] = {
     "notepad": ("notepad", "नोटपैड"),
     "calculator": ("calculator", "calc", "कैलकुलेटर"),
@@ -310,7 +310,7 @@ class MockLLM:
 class MockTTS:
     """Prints the reply and, when ``pyttsx3`` is installed, speaks it offline.
 
-    It yields no PCM, so :class:`audio.player.AudioPlayer` never opens a sound
+    It yields no PCM, so :class:`audio.speaker.AudioPlayer` never opens a sound
     device, but the mic mute flag is still set while speaking.
     """
 

@@ -19,20 +19,21 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from assistant import actions, safety
-from assistant.brain import Brain, Reply
-from assistant.config import (
+from actions import registry as actions
+from brain.brain import Brain, Reply
+from brain.llm_client import ChatModel, SarvamLLM
+from brain.memory import Memory
+from core.config import (
     ConfigError,
     Settings,
     get_settings,
     load_settings,
     save_env_values,
 )
-from assistant.logging_setup import setup_logging, shutdown_logging
-from assistant.memory import Memory
-from assistant.pipeline import Pipeline, PipelineEvent, create_mock_pipeline, create_pipeline
+from core.logging import setup_logging, shutdown_logging
+from core.orchestrator import Pipeline, PipelineEvent, create_mock_pipeline, create_pipeline
+from safety import guard as safety
 from sarvam.client import SarvamClient
-from sarvam.llm import ChatModel, SarvamLLM
 from sarvam.mock import MockLLM, MockTTS
 
 logger = logging.getLogger(__name__)
