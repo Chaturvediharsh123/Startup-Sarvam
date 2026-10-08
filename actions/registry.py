@@ -1,38 +1,54 @@
-"""The allow-listed PC actions the assistant may perform.
+"""The one registry of PC actions (PDF "Actions": named functions in one registry).
 
-Each action is a plain function registered with :func:`action`. The decorator
-records it in :data:`ACTIONS` and builds the OpenAI-style tool schema that the
-Sarvam Chat Completions API accepts (see docs/sarvam_api_notes.md, section 3).
+Each action is a plain function registered with :func:`action`: a name, a plain
+description, its argument list (JSON schema), a risk level and the function. The
+LLM tool list is generated from this registry, so adding an action is one function
+plus one decorator line (and one entry in ``config/allowlist.yaml``).
 
 Rules for every action:
 
-* Never run a shell, and never build a command string from LLM input.
-* Fixed choices are JSON-schema ``enum`` values, so the model cannot invent them.
+* Never run a shell, and never build a command or a path from LLM input.
+* App names, shortcut keys and text limits come from ``config/allowlist.yaml``.
 * Windows-only libraries are imported inside the function that needs them.
-* Return a short English result string, or a small dict for informational actions.
+* Return a short English fact (``"opened chrome"``), or a dict for informational
+  actions. Raise :class:`ActionError` with a friendly fact when something is wrong.
 
-Actions are only ever called through :func:`safety.guard.execute`.
+The small wrappers at the bottom (``_startfile``, ``_lock_workstation``) are the
+only places that touch the PC directly, so tests can patch them in one spot.
 """
 
 from __future__ import annotations
 
-import contextlib
+import logging
 import os
-import re
-import subprocess
+import subprocess  # noqa: F401 - patched by tests/conftest.py (no_side_effects)
+import threading
 import time
-import unicodedata
-import webbrowser
+import webbrowser  # noqa: F401 - patched by tests/conftest.py (no_side_effects)
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote_plus
 
-from core.config import Settings, get_settings
+from core.config import ALLOWLIST_FILE, ConfigError, Settings, get_settings, load_settings
+
+logger = logging.getLogger(__name__)
 
 ActionFunc = Callable[..., Any]
+FactFunc = Callable[[Any], str]
+RISK_LEVELS = ("low", "medium", "high")
+
+
+class ActionError(RuntimeError):
+    """A friendly, expected failure. ``str(exc)`` is the short English fact."""
+
+
+class NotAllowedError(ActionError):
+    """The request names something that is not on the allow-list."""
+
+
+class NotInstalledError(ActionError):
+    """An allow-listed app that is not installed on this PC."""
 
 
 @dataclass(frozen=True)
@@ -43,8 +59,14 @@ class ActionSpec:
     func: ActionFunc
     description: str
     parameters: dict[str, Any]
-    risky: bool = False
+    risk: str = "low"
     informational: bool = False
+    fact: FactFunc | None = None
+
+    @property
+    def risky(self) -> bool:
+        """True for high-risk actions, which need a spoken yes."""
+        return self.risk == "high"
 
     def tool_schema(self) -> dict[str, Any]:
         """OpenAI-style function tool definition for this action."""
@@ -52,44 +74,47 @@ class ActionSpec:
             "type": "function",
             "function": {
                 "name": self.name,
-                "description": self.description,
-                "parameters": self.parameters,
+                "description": _describe(self.description),
+                "parameters": _resolve_parameters(self.parameters),
             },
         }
 
+    def to_fact(self, result: Any) -> str:
+        """The short English fact for a successful result."""
+        if self.fact is not None:
+            return self.fact(result)
+        if isinstance(result, str):
+            return result
+        if isinstance(result, dict):
+            return ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in result.items())
+        return f"{self.name.replace('_', ' ')} done"
+
 
 ACTIONS: dict[str, ActionSpec] = {}
-
-_settings: Settings | None = None
-_sleep = time.sleep
-
-
-def configure(settings: Settings) -> None:
-    """Give the actions their settings (notes folder, shutdown delay)."""
-    global _settings
-    _settings = settings
-
-
-def _config() -> Settings:
-    return _settings if _settings is not None else get_settings()
 
 
 def action(
     description: str,
     params: dict[str, dict[str, Any]] | None = None,
     required: Sequence[str] = (),
-    risky: bool = False,
+    risk: str = "low",
     informational: bool = False,
+    fact: FactFunc | None = None,
 ) -> Callable[[ActionFunc], ActionFunc]:
-    """Register a function as an allow-listed action.
+    """Register a function as an action.
 
     Args:
-        description: what the action does, written for the LLM.
-        params: JSON-schema properties, keyed by argument name.
+        description: what the action does, written for the LLM. ``{apps}`` and
+            ``{shortcuts}`` are filled from the allow-list.
+        params: JSON-schema properties, keyed by argument name. ``"x-enum":
+            "safe_shortcuts"`` becomes an ``enum`` of the allow-listed shortcut names.
         required: argument names the LLM must always send.
-        risky: needs a spoken "yes" before it runs.
+        risk: ``low`` | ``medium`` | ``high`` (must match ``config/allowlist.yaml``).
         informational: returns data the LLM should turn into a spoken answer.
+        fact: turns the result into a short English fact (default: the string itself).
     """
+    if risk not in RISK_LEVELS:
+        raise ValueError(f"risk must be one of {RISK_LEVELS}, got {risk!r}")
 
     def register(func: ActionFunc) -> ActionFunc:
         """Record ``func`` in :data:`ACTIONS` with its tool schema."""
@@ -104,7 +129,7 @@ def action(
             "additionalProperties": False,
         }
         ACTIONS[func.__name__] = ActionSpec(
-            func.__name__, func, description, parameters, risky, informational
+            func.__name__, func, description, parameters, risk, informational, fact
         )
         return func
 
@@ -117,75 +142,118 @@ def tool_schemas() -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Allow-lists
+# Settings and the allow-list file
 # ---------------------------------------------------------------------------
 
-# App name -> target passed to os.startfile (an executable on PATH / App Paths, or a URI).
-APPS: dict[str, str] = {
-    "notepad": "notepad.exe",
-    "calculator": "calc.exe",
-    "paint": "mspaint.exe",
-    "file_manager": "explorer.exe",
-    "chrome": "chrome",
-    "edge": "msedge",
-    "word": "winword",
-    "excel": "excel",
-    "powerpoint": "powerpnt",
-    "settings": "ms-settings:",
-    "camera": "microsoft.windows.camera:",
-}
+_settings: Settings | None = None
+_allowlist: dict[str, Any] | None = None
+_allowlist_path: Path = ALLOWLIST_FILE
+_lock = threading.Lock()
+_sleep = time.sleep
 
-# App name -> process names that close_app may terminate. File manager (explorer.exe)
-# is left out on purpose: killing it would take down the taskbar.
-PROCESS_NAMES: dict[str, tuple[str, ...]] = {
-    "notepad": ("notepad.exe",),
-    "calculator": ("calculatorapp.exe", "calculator.exe"),
-    "paint": ("mspaint.exe",),
-    "chrome": ("chrome.exe",),
-    "edge": ("msedge.exe",),
-    "word": ("winword.exe",),
-    "excel": ("excel.exe",),
-    "powerpoint": ("powerpnt.exe",),
-    "settings": ("systemsettings.exe",),
-    "camera": ("windowscamera.exe",),
-}
 
-SAFE_HOTKEYS: dict[str, tuple[str, ...]] = {
-    "save": ("ctrl", "s"),
-    "copy": ("ctrl", "c"),
-    "paste": ("ctrl", "v"),
-    "undo": ("ctrl", "z"),
-    "redo": ("ctrl", "y"),
-    "select_all": ("ctrl", "a"),
-    "new_tab": ("ctrl", "t"),
-    "close_tab": ("ctrl", "w"),
-    "refresh": ("f5",),
-    "enter": ("enter",),
-    "minimize_all": ("win", "d"),
-    "switch_window": ("alt", "tab"),
-    "zoom_in": ("ctrl", "="),
-    "zoom_out": ("ctrl", "-"),
-}
+def configure(settings: Settings) -> None:
+    """Give the actions their settings (notes folder, shutdown delay, allow-list path)."""
+    global _settings, _allowlist, _allowlist_path
+    with _lock:
+        _settings = settings
+        _allowlist_path = settings.allowlist_path
+        _allowlist = None
 
-# Mouse-wheel notches; Windows reports one notch as a delta of 120.
-SCROLL_NOTCHES: dict[str, int] = {"small": 3, "medium": 8, "large": 15}
-WHEEL_DELTA = 120
 
-MAX_TYPE_CHARS = 2000
-MAX_QUERY_CHARS = 200
-MAX_NOTE_CHARS = 20000
-MAX_TITLE_CHARS = 80
-# Full path so a planted shutdown.exe elsewhere on PATH can never be run.
-SHUTDOWN_EXE = str(Path(os.environ.get("SYSTEMROOT", r"C:\Windows")) / "System32" / "shutdown.exe")
-_RESERVED_NAMES = frozenset(
-    {"con", "prn", "aux", "nul"}
-    | {f"com{i}" for i in range(1, 10)}
-    | {f"lpt{i}" for i in range(1, 10)}
-)
+def config() -> Settings:
+    """The settings given to :func:`configure`, or the process-wide ones."""
+    if _settings is not None:
+        return _settings
+    try:
+        return get_settings()
+    except ConfigError:
+        return load_settings(require_key=False)
+
+
+def load_allowlist(path: Path) -> dict[str, Any]:
+    """Read ``config/allowlist.yaml`` into a dict (empty sections when missing)."""
+    import yaml
+
+    data: Any = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict):
+        raise ConfigError(f"{path.name} must be a mapping")
+    for section in ("actions", "apps", "safe_shortcuts", "limits"):
+        data[section] = data.get(section) or {}
+    for section in ("blocked_apps", "blocked_key_combos", "blocked_keys"):
+        data[section] = data.get(section) or []
+    return data
+
+
+def allowlist() -> dict[str, Any]:
+    """The allow-list, loaded once (and again after :func:`configure`)."""
+    global _allowlist
+    with _lock:
+        if _allowlist is None:
+            _allowlist = load_allowlist(_allowlist_path)
+        return _allowlist
+
+
+def limit(name: str, default: int) -> int:
+    """A character limit from the allow-list ``limits`` section."""
+    return int(allowlist()["limits"].get(name, default))
+
+
+def safe_shortcuts() -> dict[str, tuple[str, ...]]:
+    """Allow-listed shortcut name -> keys pressed together."""
+    return {
+        str(k): tuple(str(x).lower() for x in v)
+        for k, v in allowlist()["safe_shortcuts"].items()
+    }
+
+
+def _describe(text: str) -> str:
+    """Fill ``{apps}`` / ``{shortcuts}`` placeholders in a description."""
+    if "{" not in text:
+        return text
+    data = allowlist()
+    return text.format(apps=", ".join(data["apps"]), shortcuts=", ".join(data["safe_shortcuts"]))
+
+
+def _resolve_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
+    """Copy the schema, turning ``x-enum`` markers into real enums from the allow-list."""
+    properties: dict[str, Any] = {}
+    for key, schema in parameters["properties"].items():
+        prop = {k: v for k, v in schema.items() if not k.startswith("x-")}
+        source = schema.get("x-enum")
+        if source:
+            prop["enum"] = sorted(allowlist()[source])
+        properties[key] = prop
+    return {**parameters, "properties": properties}
+
+
+# Back-compat views of the allow-list (used by sarvam/mock.py and older callers).
+def _apps_view() -> dict[str, str]:
+    return {k: str(v.get("launch", "")) for k, v in allowlist()["apps"].items()}
+
+
+def _process_view() -> dict[str, tuple[str, ...]]:
+    return {
+        k: tuple(str(p).lower() for p in v.get("processes") or ())
+        for k, v in allowlist()["apps"].items()
+        if v.get("processes")
+    }
+
+
+def __getattr__(name: str) -> Any:
+    """Lazy ``APPS`` / ``PROCESS_NAMES`` / ``SAFE_HOTKEYS`` built from the allow-list."""
+    views: dict[str, Callable[[], Any]] = {
+        "APPS": _apps_view,
+        "PROCESS_NAMES": _process_view,
+        "SAFE_HOTKEYS": safe_shortcuts,
+    }
+    if name in views:
+        return views[name]()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # ---------------------------------------------------------------------------
-# Small wrappers (patched in tests so nothing real happens)
+# The only functions that touch the PC directly (patched in tests)
 # ---------------------------------------------------------------------------
 
 
@@ -193,7 +261,7 @@ def _startfile(target: str) -> None:
     """Open a file, program or URI with its default Windows handler."""
     startfile = getattr(os, "startfile", None)
     if startfile is None:
-        raise RuntimeError("Opening apps is only supported on Windows")
+        raise ActionError("opening apps only works on Windows")
     startfile(target)
 
 
@@ -202,293 +270,4 @@ def _lock_workstation() -> None:
     import ctypes
 
     if not ctypes.windll.user32.LockWorkStation():  # type: ignore[attr-defined]
-        raise RuntimeError("LockWorkStation failed")
-
-
-def _endpoint_volume() -> Any:
-    """Return the speaker volume COM object, supporting new and old pycaw APIs."""
-    import comtypes
-    from pycaw.pycaw import AudioUtilities
-
-    with contextlib.suppress(OSError):
-        comtypes.CoInitialize()  # needed in worker threads; harmless if already done
-    speakers = AudioUtilities.GetSpeakers()
-    endpoint = getattr(speakers, "EndpointVolume", None)
-    if endpoint is not None:  # pycaw >= 20240210
-        return endpoint
-    from ctypes import POINTER, cast
-
-    from pycaw.pycaw import IAudioEndpointVolume
-
-    interface = speakers.Activate(IAudioEndpointVolume._iid_, comtypes.CLSCTX_ALL, None)
-    return cast(interface, POINTER(IAudioEndpointVolume))
-
-
-def sanitize_filename(title: str) -> str:
-    """Make a safe Windows file name (without extension) from a note title.
-
-    Removes path separators, ``..``, reserved characters and control characters,
-    and avoids reserved device names such as ``CON`` or ``LPT1``.
-    """
-    text = unicodedata.normalize("NFC", title)
-    text = "".join(" " if unicodedata.category(c).startswith("C") else c for c in text)
-    text = re.sub(r'[<>:"/\\|?*]', " ", text)
-    text = text.replace("..", " ")
-    text = " ".join(text.split()).strip(" .")
-    text = text[:MAX_TITLE_CHARS].strip(" .")
-    if not text:
-        return "note"
-    if text.split(".")[0].strip().lower() in _RESERVED_NAMES:
-        text = f"note_{text}"
-    return text
-
-
-# ---------------------------------------------------------------------------
-# Actions
-# ---------------------------------------------------------------------------
-
-
-@action(
-    "Open an application on the PC.",
-    {"name": {"type": "string", "enum": sorted(APPS), "description": "Which app to open"}},
-    required=["name"],
-)
-def open_app(name: str) -> str:
-    """Launch an allow-listed app."""
-    _startfile(APPS[name])
-    return f"Opened {name}"
-
-
-@action(
-    "Close an open application. Asks the user to confirm first.",
-    {"name": {"type": "string", "enum": sorted(PROCESS_NAMES), "description": "Which app"}},
-    required=["name"],
-    risky=True,
-)
-def close_app(name: str) -> str:
-    """Terminate an allow-listed app's processes, killing any that refuse."""
-    import psutil
-
-    targets = set(PROCESS_NAMES[name])
-    procs = [
-        p for p in psutil.process_iter(["name"]) if (p.info.get("name") or "").lower() in targets
-    ]
-    if not procs:
-        return f"{name} is not running"
-    for proc in procs:
-        try:
-            proc.terminate()
-        except psutil.NoSuchProcess:
-            continue
-    _, alive = psutil.wait_procs(procs, timeout=3)
-    for proc in alive:
-        try:
-            proc.kill()
-        except psutil.NoSuchProcess:
-            continue
-    return f"Closed {name}"
-
-
-@action(
-    "Search Google in the web browser.",
-    {"query": {"type": "string", "minLength": 1, "maxLength": MAX_QUERY_CHARS}},
-    required=["query"],
-)
-def web_search(query: str) -> str:
-    """Open Google results for ``query``."""
-    webbrowser.open("https://www.google.com/search?q=" + quote_plus(query))
-    return f"Searched the web for {query}"
-
-
-@action(
-    "Search YouTube in the web browser, for songs, videos or bhajans.",
-    {"query": {"type": "string", "minLength": 1, "maxLength": MAX_QUERY_CHARS}},
-    required=["query"],
-)
-def youtube_search(query: str) -> str:
-    """Open YouTube results for ``query``."""
-    webbrowser.open("https://www.youtube.com/results?search_query=" + quote_plus(query))
-    return f"Searched YouTube for {query}"
-
-
-@action(
-    "Set the speaker volume to an exact percentage.",
-    {"level": {"type": "integer", "minimum": 0, "maximum": 100, "description": "0 to 100"}},
-    required=["level"],
-)
-def set_volume(level: int) -> str:
-    """Set the master volume (0–100)."""
-    level = max(0, min(100, int(level)))
-    endpoint = _endpoint_volume()
-    endpoint.SetMasterVolumeLevelScalar(level / 100, None)
-    if level > 0:
-        endpoint.SetMute(0, None)
-    return f"Volume set to {level}%"
-
-
-@action(
-    "Turn the volume up or down, or mute/unmute it.",
-    {
-        "direction": {"type": "string", "enum": ["up", "down", "mute", "unmute"]},
-        "step": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
-    },
-    required=["direction"],
-)
-def change_volume(direction: str, step: int = 10) -> str:
-    """Change the master volume relative to its current level."""
-    endpoint = _endpoint_volume()
-    if direction == "mute":
-        endpoint.SetMute(1, None)
-        return "Volume muted"
-    if direction == "unmute":
-        endpoint.SetMute(0, None)
-        return "Volume unmuted"
-    current = round(endpoint.GetMasterVolumeLevelScalar() * 100)
-    delta = step if direction == "up" else -step
-    level = max(0, min(100, current + delta))
-    endpoint.SetMasterVolumeLevelScalar(level / 100, None)
-    endpoint.SetMute(0, None)
-    return f"Volume is now {level}%"
-
-
-@action(
-    "Type text into the window that is open now. Works for every language and script.",
-    {"text": {"type": "string", "minLength": 1, "maxLength": MAX_TYPE_CHARS}},
-    required=["text"],
-)
-def type_text(text: str) -> str:
-    """Paste ``text`` via the clipboard (handles Hindi, Tamil, …) and restore the clipboard."""
-    import pyautogui
-    import pyperclip
-
-    try:
-        previous = pyperclip.paste()
-    except pyperclip.PyperclipException:
-        previous = None
-    pyperclip.copy(text)
-    try:
-        _sleep(0.05)
-        pyautogui.hotkey("ctrl", "v")
-        _sleep(0.3)
-    finally:
-        if previous is not None:
-            pyperclip.copy(previous)
-    return f"Typed {len(text)} characters"
-
-
-@action(
-    "Press a common keyboard shortcut in the current window.",
-    {"shortcut": {"type": "string", "enum": sorted(SAFE_HOTKEYS)}},
-    required=["shortcut"],
-)
-def press_shortcut(shortcut: str) -> str:
-    """Press one allow-listed key combination."""
-    import pyautogui
-
-    pyautogui.hotkey(*SAFE_HOTKEYS[shortcut])
-    return f"Pressed {shortcut}"
-
-
-@action(
-    "Scroll the current window up or down.",
-    {
-        "direction": {"type": "string", "enum": ["up", "down"]},
-        "amount": {"type": "string", "enum": sorted(SCROLL_NOTCHES), "default": "medium"},
-    },
-    required=["direction"],
-)
-def scroll(direction: str, amount: str = "medium") -> str:
-    """Scroll by a small, medium or large amount."""
-    import pyautogui
-
-    clicks = SCROLL_NOTCHES[amount] * WHEEL_DELTA
-    pyautogui.scroll(clicks if direction == "up" else -clicks)
-    return f"Scrolled {direction}"
-
-
-@action("Take a screenshot and save it in the notes folder.")
-def take_screenshot() -> str:
-    """Save a PNG screenshot with a timestamped name."""
-    import pyautogui
-
-    folder = _config().notes_dir
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f"screenshot_{datetime.now():%Y%m%d_%H%M%S}.png"
-    pyautogui.screenshot().save(path)
-    return f"Screenshot saved to {path}"
-
-
-@action("Get battery level, charging state, CPU, memory and disk use.", informational=True)
-def system_status() -> dict[str, Any]:
-    """Report basic system health."""
-    import psutil
-
-    battery = psutil.sensors_battery()
-    disk = psutil.disk_usage(Path.home().anchor or "/")
-    return {
-        "battery_percent": round(battery.percent) if battery else None,
-        "charging": bool(battery.power_plugged) if battery else None,
-        "cpu_percent": round(psutil.cpu_percent(interval=0.3)),
-        "memory_percent": round(psutil.virtual_memory().percent),
-        "disk_free_gb": round(disk.free / 1e9, 1),
-        "disk_percent": round(disk.percent),
-    }
-
-
-@action("Lock the computer screen. Asks the user to confirm first.", risky=True)
-def lock_pc() -> str:
-    """Lock the Windows session."""
-    _lock_workstation()
-    return "Computer locked"
-
-
-@action(
-    "Shut down the computer after a delay. Asks the user to confirm first.", risky=True
-)
-def shutdown_pc() -> str:
-    """Schedule a shutdown that the user can still cancel."""
-    delay = _config().shutdown_delay_s
-    subprocess.run(
-        [SHUTDOWN_EXE, "/s", "/t", str(delay)], check=True, capture_output=True, timeout=10
-    )
-    return f"Shutdown in {delay} seconds. Say 'cancel shutdown' to stop it."
-
-
-@action("Cancel a shutdown that was scheduled earlier.")
-def cancel_shutdown() -> str:
-    """Abort a pending shutdown."""
-    done = subprocess.run([SHUTDOWN_EXE, "/a"], check=False, capture_output=True, timeout=10)
-    if done.returncode != 0:
-        return "No shutdown was scheduled"
-    return "Shutdown cancelled"
-
-
-@action(
-    "Save a note, letter or application as a text file and open it. Write the COMPLETE "
-    "text in 'content' in the user's language.",
-    {
-        "title": {"type": "string", "minLength": 1, "maxLength": MAX_TITLE_CHARS},
-        "content": {"type": "string", "minLength": 1, "maxLength": MAX_NOTE_CHARS},
-    },
-    required=["title", "content"],
-)
-def save_note(title: str, content: str) -> str:
-    """Write a UTF-8 text file in the notes folder, open it and return its path."""
-    folder = _config().notes_dir.resolve()
-    folder.mkdir(parents=True, exist_ok=True)
-    name = sanitize_filename(title)
-    path = folder / f"{name}.txt"
-    if path.exists():
-        path = folder / f"{name} {datetime.now():%Y%m%d_%H%M%S}.txt"
-    if path.resolve().parent != folder:
-        raise ValueError("note path escapes the notes folder")
-    path.write_text(content, encoding="utf-8")
-    _startfile(str(path))
-    return f"Saved note to {path}"
-
-
-@action("Get the current local date and time.", informational=True)
-def current_time() -> dict[str, str]:
-    """Report the local date and time."""
-    now = datetime.now()
-    return {"time": now.strftime("%H:%M"), "date": now.strftime("%A, %d %B %Y")}
+        raise ActionError("could not lock the pc")

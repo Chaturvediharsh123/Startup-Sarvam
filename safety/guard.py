@@ -1,16 +1,19 @@
-"""The safety gate. :func:`execute` is the only way an action may run.
+"""The safety guard (PDF "Safety"): allow, ask first, or deny every tool call.
 
-Order of checks for every call:
+:class:`SafetyGuard` implements :class:`core.interfaces.Guard`. Order of checks:
 
-1. Allow-list: unknown action names are ``blocked``.
-2. Argument validation against the action's JSON schema (types, enums, ranges,
-   required keys, no extra keys). Failures are ``error``.
-3. Rate limit: at most N actions per minute, so a looping LLM cannot spam the PC.
-   Over the limit is ``blocked``.
-4. Risky actions ask the user in their language and need a clear yes, otherwise
-   ``denied``. The action function is never called without that yes.
-5. Run with timing and exception capture. Exceptions are ``error``.
-6. Log to memory and ``logs/actions.log``.
+1. Emergency stop: after the kill switch fired, everything is denied.
+2. Allow-list: an action not in ``config/allowlist.yaml`` (or with no registered
+   function) is denied "not on the allow-list".
+3. Arguments: types against the action's JSON schema, then the allow-list rules
+   (app must resolve to an allowed app, shortcut must be safe and not blocked,
+   text within limits). Failures are denied "bad arguments: ...".
+4. Rate limit: at most N actions per minute; over the limit is denied "rate limit".
+5. Risk: low = allow, medium = allow and log, high = confirm (a spoken question in
+   the user's language; only a clear yes runs it).
+
+The guard never runs an action. It only returns a :class:`SafetyDecision` with
+cleaned arguments (e.g. ``"crome"`` becomes ``"chrome"``) for the runner.
 """
 
 from __future__ import annotations
@@ -18,51 +21,41 @@ from __future__ import annotations
 import logging
 import threading
 import time
-import unicodedata
 from collections import deque
-from collections.abc import Callable
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterable
+from pathlib import Path
 from typing import Any
 
-from actions.registry import ACTIONS, ActionSpec
-from brain.memory import Memory
+from core.config import Settings
+from core.events import ActionResult, SafetyDecision, ToolCall, Verdict
+from core.interfaces import Health
 from core.logging import ACTIONS_LOGGER
-from language.phrases import (
-    NO_WORDS,
-    PHRASES,
-    QUESTION_WORDS,
-    YES_PHRASES,
-    YES_WORDS,
-    phrase,
-)
+from safety.allowlist import Allowlist
+from safety.confirm import AskUser, confirmation_question, is_no, is_yes
+
+__all__ = [
+    "ActionResult",  # re-exported for older imports (ui/app.py)
+    "ArgumentError",
+    "AskUser",
+    "RateLimiter",
+    "SafetyGuard",
+    "is_no",
+    "is_yes",
+    "validate_args",
+]
 
 logger = logging.getLogger(__name__)
 audit = logging.getLogger(ACTIONS_LOGGER)
 
-AskUser = Callable[[str], str | None]
-MAX_YES_TOKENS = 8
+Schemas = Iterable[dict[str, Any]]
+SchemasProvider = Schemas | Callable[[], Schemas]
 
-
-@dataclass
-class ActionResult:
-    """Outcome of one :func:`execute` call."""
-
-    name: str
-    args: dict[str, Any]
-    status: str  # ok | error | denied | blocked
-    result: Any
-    duration_ms: int = 0
-    informational: bool = False
-    extra: dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def ok(self) -> bool:
-        """True when the action ran successfully."""
-        return self.status == "ok"
+NOT_ALLOWED = "not on the allow-list"
+RATE_LIMIT = "rate limit"
 
 
 class ArgumentError(ValueError):
-    """Raised when LLM-supplied arguments do not match the action schema."""
+    """Raised when LLM-supplied arguments do not match the schema or the allow-list."""
 
 
 class RateLimiter:
@@ -86,52 +79,8 @@ class RateLimiter:
             return True
 
 
-_limiter = RateLimiter(10)
-
-
-def configure(max_actions_per_minute: int) -> None:
-    """Replace the module rate limiter (called once at start-up)."""
-    global _limiter
-    _limiter = RateLimiter(max_actions_per_minute)
-
-
 # ---------------------------------------------------------------------------
-# Yes / no detection
-# ---------------------------------------------------------------------------
-
-
-def _tokens(text: str) -> list[str]:
-    """Lower-case words with punctuation and symbols removed (keeps Indic vowel signs)."""
-    norm = unicodedata.normalize("NFC", text).lower().replace("’", "'")
-    cleaned = "".join(
-        " " if c != "'" and unicodedata.category(c)[0] in ("P", "S") else c for c in norm
-    )
-    return cleaned.split()
-
-
-def is_yes(text: str | None) -> bool:
-    """True only for a clear "yes" in a supported language.
-
-    Any "no" word anywhere, silence, ``None``, noise, a question, or a long
-    rambling answer counts as False.
-    """
-    if not text or not text.strip():
-        return False
-    if "?" in text or "？" in text:
-        return False
-    tokens = _tokens(text)
-    if not tokens or len(tokens) > MAX_YES_TOKENS:
-        return False
-    if any(t in NO_WORDS or t in QUESTION_WORDS for t in tokens):
-        return False
-    joined = f" {' '.join(tokens)} "
-    if any(f" {p} " in joined for p in YES_PHRASES):
-        return True
-    return any(t in YES_WORDS for t in tokens)
-
-
-# ---------------------------------------------------------------------------
-# Argument validation
+# JSON-schema argument validation (types, enums, ranges, required, no extras)
 # ---------------------------------------------------------------------------
 
 
@@ -171,109 +120,223 @@ def _check_value(key: str, value: Any, schema: dict[str, Any]) -> Any:
     return value
 
 
-def validate_args(spec: ActionSpec, args: Any) -> dict[str, Any]:
-    """Return validated arguments for ``spec`` or raise :class:`ArgumentError`."""
+def validate_args(parameters: dict[str, Any], args: Any) -> dict[str, Any]:
+    """Return arguments checked against a JSON-schema ``parameters`` object.
+
+    Raises:
+        ArgumentError: not an object, unknown or missing keys, wrong types or ranges.
+    """
     if args is None:
         args = {}
     if not isinstance(args, dict):
         raise ArgumentError("arguments must be an object")
-    properties: dict[str, Any] = spec.parameters.get("properties", {})
+    properties: dict[str, Any] = parameters.get("properties", {})
     extra = set(args) - set(properties)
     if extra:
-        raise ArgumentError(f"unexpected arguments: {sorted(extra)}")
-    missing = [k for k in spec.parameters.get("required", []) if k not in args]
+        raise ArgumentError(f"unexpected arguments: {sorted(map(str, extra))}")
+    missing = [k for k in parameters.get("required", []) if k not in args]
     if missing:
         raise ArgumentError(f"missing arguments: {missing}")
     return {key: _check_value(key, value, properties[key]) for key, value in args.items()}
 
 
 # ---------------------------------------------------------------------------
-# Execution
+# The guard
 # ---------------------------------------------------------------------------
 
 
-def confirmation_question(
-    spec: ActionSpec, args: dict[str, Any], language: str | None, romanised: bool
-) -> str:
-    """The spoken question asked before a risky action, in the user's language."""
-    key = f"confirm_{spec.name}"
-    if key not in PHRASES:
-        return phrase("confirm_generic", language, romanised, name=spec.name.replace("_", " "))
-    return phrase(key, language, romanised, name=args.get("name", ""))
+class SafetyGuard:
+    """Allow-list, argument checks, rate limit and risk level for every tool call."""
 
+    def __init__(
+        self,
+        settings: Settings,
+        allowlist_path: Path | None = None,
+        schemas_provider: SchemasProvider | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        """
+        Args:
+            settings: reads ``max_actions_per_minute`` and ``allowlist_path``.
+            allowlist_path: overrides ``settings.allowlist_path``.
+            schemas_provider: the tool schemas (a list, or a function returning one),
+                e.g. ``ActionRunner.tool_schemas``. Safety never imports actions.
+        """
+        self.settings = settings
+        self.allowlist = Allowlist.load(allowlist_path or settings.allowlist_path)
+        self._provider = schemas_provider
+        self._schemas: dict[str, dict[str, Any]] | None = None
+        self.limiter = RateLimiter(settings.max_actions_per_minute, clock)
+        self._halted = ""
 
-def _record(memory: Memory | None, outcome: ActionResult) -> ActionResult:
-    """Write the outcome to the database and the audit log."""
-    text = outcome.result if isinstance(outcome.result, str) else repr(outcome.result)
-    audit.info(
-        "%s status=%s args=%s result=%s duration_ms=%d",
-        outcome.name, outcome.status, outcome.args, text, outcome.duration_ms,
-    )
-    if memory is not None:
+    # -- lifecycle -----------------------------------------------------------------
+
+    def start(self) -> None:
+        """Nothing to open; the allow-list was read at construction."""
+
+    def stop(self) -> None:
+        """Nothing to close."""
+
+    def health(self) -> Health:
+        """Not OK while the emergency stop is active."""
+        if self._halted:
+            return Health("safety", False, f"stopped: {self._halted}")
+        return Health("safety", True, f"{len(self.allowlist.actions)} actions allowed")
+
+    def halt(self, reason: str = "emergency stop") -> None:
+        """Deny every call until :meth:`resume` (wire the kill switch to this)."""
+        self._halted = reason or "emergency stop"
+        audit.warning("Emergency stop: %s", self._halted)
+
+    def resume(self) -> None:
+        """Allow calls again after :meth:`halt`."""
+        self._halted = ""
+
+    # -- Guard protocol ----------------------------------------------------------------
+
+    def is_yes(self, text: str | None) -> bool:
+        """True only for a clear yes ("haan", "yes", "aam", "avunu", ...)."""
+        return is_yes(text)
+
+    def is_no(self, text: str | None) -> bool:
+        """True when the answer contains a no word."""
+        return is_no(text)
+
+    def check(
+        self,
+        call: ToolCall,
+        language: str | None = None,
+        romanised: bool = False,
+        *,
+        turn_id: str = "",
+    ) -> SafetyDecision:
+        """Allow, confirm or deny one tool call. Never raises."""
         try:
-            memory.log_action(outcome.name, outcome.args, text, outcome.status, outcome.duration_ms)
-        except Exception:  # noqa: BLE001 - logging must never break the turn
-            logger.exception("Could not store action %s in memory", outcome.name)
-    return outcome
+            return self._check(call, language, romanised, turn_id)
+        except Exception as exc:  # noqa: BLE001 - a guard bug must deny, never crash
+            logger.exception("Safety check failed for %s", getattr(call, "name", "?"))
+            return self._decide(call, Verdict.DENY, f"safety check failed: {exc}", turn_id)
+
+    # -- internals -------------------------------------------------------------------
+
+    def _check(
+        self, call: ToolCall, language: str | None, romanised: bool, turn_id: str
+    ) -> SafetyDecision:
+        if self._halted:
+            return self._decide(call, Verdict.DENY, f"emergency stop: {self._halted}", turn_id)
+        rule = self.allowlist.actions.get(call.name)
+        schemas = self._schema_map()
+        if rule is None or (schemas is not None and call.name not in schemas):
+            return self._decide(call, Verdict.DENY, NOT_ALLOWED, turn_id)
+        try:
+            clean = self._clean_args(call.name, call.args, schemas)
+        except ArgumentError as exc:
+            return self._decide(call, Verdict.DENY, f"bad arguments: {exc}", turn_id, rule.risk)
+        if not self.limiter.allow():
+            reason = f"{RATE_LIMIT}: more than {self.limiter.max_per_minute} actions in a minute"
+            return self._decide(call, Verdict.DENY, reason, turn_id, rule.risk, clean)
+        if rule.risk == "high":
+            question = confirmation_question(call.name, clean, language, romanised)
+            return self._decide(call, Verdict.CONFIRM, "high risk: needs a spoken yes", turn_id,
+                                rule.risk, clean, question)
+        if rule.risk == "medium":
+            audit.info("medium-risk action allowed: %s %s", call.name, _short(clean))
+            return self._decide(call, Verdict.ALLOW, "medium risk: logged", turn_id,
+                                rule.risk, clean)
+        return self._decide(call, Verdict.ALLOW, "low risk", turn_id, rule.risk, clean)
+
+    def _schema_map(self) -> dict[str, dict[str, Any]] | None:
+        if self._provider is None:
+            return None
+        if self._schemas is None:
+            raw = self._provider() if callable(self._provider) else self._provider
+            self._schemas = {}
+            for tool in raw:
+                fn = tool.get("function", tool)
+                self._schemas[str(fn["name"])] = dict(fn.get("parameters") or {})
+        return self._schemas
+
+    def _clean_args(
+        self, name: str, args: Any, schemas: dict[str, dict[str, Any]] | None
+    ) -> dict[str, Any]:
+        if args is None:
+            args = {}
+        if not isinstance(args, dict):
+            raise ArgumentError("arguments must be an object")
+        rules = self.allowlist.actions[name].args
+        extra = set(args) - set(rules)
+        if extra:
+            raise ArgumentError(f"unexpected arguments: {sorted(map(str, extra))}")
+        canonical = {key: self._apply_rule(key, value, rules[key]) for key, value in args.items()}
+        if schemas is None:
+            return canonical
+        return validate_args(schemas[name], canonical)
+
+    def _apply_rule(self, key: str, value: Any, rule: dict[str, Any]) -> Any:
+        """Check one argument against its allow-list rule; return its canonical value."""
+        kind = rule.get("kind")
+        allow = self.allowlist
+        if kind in ("app", "closable_app"):
+            if not isinstance(value, str) or not value.strip():
+                raise ArgumentError(f"{key} must be an app name")
+            app = allow.resolve_app(value)
+            if app is None:
+                raise ArgumentError(f"{value.strip()[:60]!r} is not an allowed app")
+            if kind == "closable_app" and not allow.closable(app):
+                raise ArgumentError(f"{app.replace('_', ' ')} cannot be closed")
+            return app
+        if kind == "shortcut":
+            if not isinstance(value, str) or not value.strip():
+                raise ArgumentError(f"{key} must be a shortcut name")
+            try:
+                return allow.shortcut(value)
+            except ValueError as exc:
+                raise ArgumentError(str(exc)) from exc
+        if kind == "text":
+            if not isinstance(value, str) or not value.strip():
+                raise ArgumentError(f"{key} must be non-empty text")
+            maximum = allow.limit(str(rule.get("max", "text_max_chars")), 2000)
+            if len(value.strip()) > maximum:
+                raise ArgumentError(f"{key} is too long (max {maximum} characters)")
+            return value
+        if kind == "choice":
+            values = [str(v) for v in rule.get("values") or ()]
+            text = str(value).strip().lower() if isinstance(value, str) else value
+            if text not in values:
+                raise ArgumentError(f"{key} must be one of {values}, got {value!r}")
+            return text
+        if kind == "int":
+            number = _coerce_integer(key, value)
+            low, high = rule.get("min"), rule.get("max")
+            if (low is not None and number < low) or (high is not None and number > high):
+                raise ArgumentError(f"{key} must be between {low} and {high}")
+            return number
+        raise ArgumentError(f"{key} has no allow-list rule")
+
+    def _decide(
+        self,
+        call: ToolCall,
+        verdict: Verdict,
+        reason: str,
+        turn_id: str,
+        risk: str = "high",
+        clean: dict[str, Any] | None = None,
+        question: str = "",
+    ) -> SafetyDecision:
+        if verdict is Verdict.DENY:
+            audit.info("denied %s: %s", getattr(call, "name", "?"), reason)
+        return SafetyDecision(
+            verdict=verdict,
+            tool_call=call,
+            reason=reason,
+            question=question,
+            risk=risk,
+            clean_args=dict(clean or {}),
+            turn_id=turn_id,
+        )
 
 
-def _confirmed(question: str, ask_user: AskUser | None) -> bool:
-    """Ask the user; anything other than a clear yes (or any failure) is a no."""
-    if ask_user is None:
-        return False
-    try:
-        answer = ask_user(question)
-    except Exception:  # noqa: BLE001 - a broken prompt must count as "no"
-        logger.exception("ask_user failed; treating as no")
-        return False
-    logger.info("Confirmation answer: %r", answer)
-    return is_yes(answer)
-
-
-def _run(spec: ActionSpec, args: dict[str, Any]) -> ActionResult:
-    """Call the action function with timing; exceptions become ``error`` results."""
-    start = time.perf_counter()
-    try:
-        result = spec.func(**args)
-        status = "ok"
-    except Exception as exc:  # noqa: BLE001 - any action failure is reported, not raised
-        logger.exception("Action %s failed", spec.name)
-        result, status = f"{type(exc).__name__}: {exc}", "error"
-    duration = int((time.perf_counter() - start) * 1000)
-    return ActionResult(spec.name, args, status, result, duration, spec.informational)
-
-
-def execute(
-    name: str,
-    args: Any,
-    memory: Memory | None,
-    ask_user: AskUser | None,
-    language: str | None = None,
-    romanised: bool = False,
-) -> ActionResult:
-    """Run one action through every safety check. Never raises for action problems."""
-    spec = ACTIONS.get(name)
-    safe_args = args if isinstance(args, dict) else {"raw": repr(args)}
-    if spec is None:
-        return _record(memory, ActionResult(name, safe_args, "blocked", "not on the allow-list"))
-    try:
-        clean = validate_args(spec, args)
-    except ArgumentError as exc:
-        return _record(memory, ActionResult(name, safe_args, "error", f"bad arguments: {exc}"))
-    if not _limiter.allow():
-        outcome = ActionResult(name, clean, "blocked", "rate limit reached")
-        outcome.extra["rate_limited"] = True
-        return _record(memory, outcome)
-    if spec.risky:
-        question = confirmation_question(spec, clean, language, romanised)
-        if not _confirmed(question, ask_user):
-            return _record(memory, ActionResult(name, clean, "denied", "user did not confirm"))
-    return _record(memory, _run(spec, clean))
-
-
-def enable_failsafe() -> None:
-    """Turn on the pyautogui failsafe: moving the mouse to a corner stops automation."""
-    import pyautogui
-
-    pyautogui.FAILSAFE = True
-    pyautogui.PAUSE = 0.05
+def _short(args: dict[str, Any], limit: int = 80) -> dict[str, Any]:
+    """Arguments with long text cut, for log lines."""
+    return {k: (v[:limit] + "...") if isinstance(v, str) and len(v) > limit else v
+            for k, v in args.items()}
