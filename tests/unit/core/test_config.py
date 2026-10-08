@@ -37,7 +37,8 @@ def test_defaults() -> None:
     assert s.sample_rate == 16000
     assert s.chunk_ms == 100
     assert s.chunk_samples == 1600
-    assert s.history_turns == 10
+    assert s.history_turns == 4
+    assert s.confirm_timeout_s == 10.0
     assert s.wake_word == ""
     assert s.db_path == PROJECT_ROOT / "data" / "assistant.db"
 

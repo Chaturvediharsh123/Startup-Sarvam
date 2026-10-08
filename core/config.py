@@ -8,14 +8,20 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from dotenv import dotenv_values
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = PROJECT_ROOT / ".env"
+SETTINGS_FILE = PROJECT_ROOT / "config" / "settings.yaml"
+ALLOWLIST_FILE = PROJECT_ROOT / "config" / "allowlist.yaml"
+
+UI_THEMES = ("dark", "light", "high_contrast")
+UI_LANGUAGES = ("en", "hi")
 
 REASONING_LEVELS = ("low", "medium", "high", "max", "none")
 
@@ -42,15 +48,38 @@ class Settings:
     chunk_ms: int = 100
     vad_silence_ms: int = 500
     mic_device: str = ""
-    history_turns: int = 10
+    history_turns: int = 4
     wake_word: str = ""
-    confirm_timeout_s: float = 6.0
+    confirm_timeout_s: float = 10.0
     shutdown_delay_s: int = 60
     max_actions_per_minute: int = 10
     barge_in: bool = False
     db_path: Path = PROJECT_ROOT / "data" / "assistant.db"
     log_dir: Path = PROJECT_ROOT / "logs"
     notes_dir: Path = Path.home() / "Documents" / "Sarvam Assistant"
+    # -- added for the architecture template ----------------------------------
+    language_hint: str = ""  # empty = auto-detect; else e.g. hi-IN
+    tts_voices: Mapping[str, str] = field(default_factory=dict)  # language -> speaker
+    noise_gate: float = 0.0  # 0.0-1.0 mic level below which chunks count as silence
+    local_silence_ms: int = 900  # backup end-of-speech if the server VAD misses it
+    stt_fallback_after: int = 3  # failed reconnects before switching to push-to-talk
+    action_timeout_s: float = 5.0
+    llm_timeout_s: float = 12.0
+    filler_after_ms: int = 1200  # speak "ek second..." if the LLM is slower than this
+    max_turn_s: float = 20.0
+    stop_words_enabled: bool = True  # "ruko" / "stop" interrupts while busy
+    ui_font_size: int = 20
+    ui_theme: str = "dark"
+    ui_language: str = "en"
+    allowlist_path: Path = ALLOWLIST_FILE
+
+    def voice_for(self, language: str | None) -> str:
+        """The TTS speaker for a language, falling back to :attr:`tts_speaker`."""
+        if language:
+            for key in (language, language.split("-")[0]):
+                if key in self.tts_voices:
+                    return self.tts_voices[key]
+        return self.tts_speaker
 
     @property
     def chunk_samples(self) -> int:
@@ -108,9 +137,61 @@ def _as_bool(raw: Mapping[str, str], key: str, default: bool) -> bool:
     raise ConfigError(f"{key} must be true or false, got {value!r}")
 
 
-def _read_raw(env_file: Path | None) -> dict[str, str]:
-    """Merge the .env file with real environment variables (environment wins)."""
-    raw: dict[str, str] = {}
+def _read_yaml(settings_file: Path | None) -> dict[str, str]:
+    """Flatten ``config/settings.yaml`` into ``ENV_NAME -> text``.
+
+    Sections (``sarvam``, ``audio``, ``stt``, ``brain``, ``tts``, ``safety``, ``ui``) only
+    group keys; each key is the lower-case form of its ``.env`` name, e.g.
+    ``brain: {history_turns: 4}`` is ``HISTORY_TURNS=4``. ``tts_voices`` is a mapping.
+    """
+    if settings_file is None or not settings_file.is_file():
+        return {}
+    import yaml
+
+    data: Any = yaml.safe_load(settings_file.read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict):
+        raise ConfigError(f"{settings_file.name} must contain sections of key: value pairs")
+    flat: dict[str, str] = {}
+    for section, values in data.items():
+        if not isinstance(values, dict):
+            raise ConfigError(f"{settings_file.name}: section {section!r} must be a mapping")
+        for key, value in values.items():
+            if str(key).lower() == "sarvam_api_key":
+                raise ConfigError("Put SARVAM_API_KEY in .env, never in settings.yaml")
+            if isinstance(value, dict):
+                value = ",".join(f"{k}:{v}" for k, v in value.items())
+            elif isinstance(value, bool):
+                value = "true" if value else "false"
+            flat[str(key).upper()] = "" if value is None else str(value)
+    return flat
+
+
+def _as_mapping(raw: Mapping[str, str], key: str) -> dict[str, str]:
+    """Read ``a:b,c:d`` into a dict (used for per-language voices)."""
+    value = raw.get(key, "").strip()
+    result: dict[str, str] = {}
+    for part in filter(None, (p.strip() for p in value.split(","))):
+        lang, sep, speaker = part.partition(":")
+        if not sep or not lang.strip() or not speaker.strip():
+            raise ConfigError(f"{key} must look like hi-IN:priya,ta-IN:kavya, got {part!r}")
+        result[lang.strip()] = speaker.strip().lower()
+    return result
+
+
+def _as_choice(raw: Mapping[str, str], key: str, default: str, choices: tuple[str, ...]) -> str:
+    """Read a setting that must be one of ``choices``."""
+    value = raw.get(key, "").strip().lower() or default
+    if value not in choices:
+        raise ConfigError(f"{key} must be one of {choices}, got {value!r}")
+    return value
+
+
+def _read_raw(env_file: Path | None, settings_file: Path | None = None) -> dict[str, str]:
+    """Merge settings.yaml, the .env file and real environment variables.
+
+    Later sources win: ``settings.yaml`` < ``.env`` < environment.
+    """
+    raw: dict[str, str] = _read_yaml(settings_file)
     if env_file is not None and env_file.is_file():
         raw.update({k: v for k, v in dotenv_values(env_file).items() if v is not None})
     raw.update(os.environ)
@@ -137,6 +218,7 @@ def load_settings(
     env_file: Path | None = ENV_FILE,
     overrides: Mapping[str, str] | None = None,
     require_key: bool = True,
+    settings_file: Path | None = SETTINGS_FILE,
 ) -> Settings:
     """Build :class:`Settings` from the .env file, the environment and ``overrides``.
 
@@ -147,7 +229,7 @@ def load_settings(
     Raises:
         ConfigError: if ``SARVAM_API_KEY`` is missing (and required) or a value is invalid.
     """
-    raw = _read_raw(env_file)
+    raw = _read_raw(env_file, settings_file)
     if overrides:
         raw.update(overrides)
     key = _api_key(raw, require_key)
@@ -174,15 +256,29 @@ def load_settings(
         chunk_ms=_as_int(raw, "CHUNK_MS", 100, 20, 500),
         vad_silence_ms=_as_int(raw, "VAD_SILENCE_MS", 500, 100, 5000),
         mic_device=raw.get("MIC_DEVICE", "").strip(),
-        history_turns=_as_int(raw, "HISTORY_TURNS", 10, 0, 100),
+        history_turns=_as_int(raw, "HISTORY_TURNS", 4, 0, 100),
         wake_word=raw.get("WAKE_WORD", "").strip(),
-        confirm_timeout_s=_as_float(raw, "CONFIRM_TIMEOUT_S", 6.0, 1.0, 60.0),
+        confirm_timeout_s=_as_float(raw, "CONFIRM_TIMEOUT_S", 10.0, 1.0, 60.0),
         shutdown_delay_s=_as_int(raw, "SHUTDOWN_DELAY_S", 60, 10, 3600),
         max_actions_per_minute=_as_int(raw, "MAX_ACTIONS_PER_MINUTE", 10, 1, 120),
         barge_in=_as_bool(raw, "BARGE_IN", False),
         db_path=_resolve_path(raw.get("DB_PATH", "").strip(), defaults.db_path),
         log_dir=_resolve_path(raw.get("LOG_DIR", "").strip(), defaults.log_dir),
         notes_dir=_resolve_path(raw.get("NOTES_DIR", "").strip(), defaults.notes_dir),
+        language_hint=raw.get("LANGUAGE_HINT", "").strip(),
+        tts_voices=_as_mapping(raw, "TTS_VOICES"),
+        noise_gate=_as_float(raw, "NOISE_GATE", 0.0, 0.0, 1.0),
+        local_silence_ms=_as_int(raw, "LOCAL_SILENCE_MS", 900, 300, 5000),
+        stt_fallback_after=_as_int(raw, "STT_FALLBACK_AFTER", 3, 1, 20),
+        action_timeout_s=_as_float(raw, "ACTION_TIMEOUT_S", 5.0, 0.5, 60.0),
+        llm_timeout_s=_as_float(raw, "LLM_TIMEOUT_S", 12.0, 1.0, 120.0),
+        filler_after_ms=_as_int(raw, "FILLER_AFTER_MS", 1200, 0, 10000),
+        max_turn_s=_as_float(raw, "MAX_TURN_S", 20.0, 5.0, 300.0),
+        stop_words_enabled=_as_bool(raw, "STOP_WORDS_ENABLED", True),
+        ui_font_size=_as_int(raw, "UI_FONT_SIZE", 20, 14, 40),
+        ui_theme=_as_choice(raw, "UI_THEME", "dark", UI_THEMES),
+        ui_language=_as_choice(raw, "UI_LANGUAGE", "en", UI_LANGUAGES),
+        allowlist_path=_resolve_path(raw.get("ALLOWLIST_PATH", "").strip(), ALLOWLIST_FILE),
     )
 
 
