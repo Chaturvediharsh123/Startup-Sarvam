@@ -1,7 +1,20 @@
+"""V1 Hindi/English word-list detector (internal helper; see ``language_spec.md``).
+
+This module implements the teammate's V1 language spec: it labels text as ``en``,
+``hi`` or ``hi-en`` (Hinglish) using a small romanised-Hindi vocabulary.
+
+It is NOT the public language API. Application code (brain, STT, TTS) must use
+:mod:`language.detect` (``detect_language``, ``detect_script``, ``LanguageInfo``),
+which covers all Indian scripts and returns Sarvam BCP-47 codes. ``language.detect``
+uses :data:`HINDI_WORDS` / :func:`detect_language` from here only to tell
+Hinglish (``hi-IN`` in Roman letters) apart from English.
+"""
+
+from __future__ import annotations
+
 import re
 
 from language.types import Language, Script
-
 
 DEVANAGARI_PATTERN = re.compile(r"[\u0900-\u097F]")
 
@@ -17,7 +30,6 @@ HINDI_WORDS = {
     "karna",
     "kar do",
     "khol",
-    "kholo",
     "kholo",
     "band",
     "bando",

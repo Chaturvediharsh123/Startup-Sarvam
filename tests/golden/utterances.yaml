@@ -1,0 +1,233 @@
+# Golden set: utterance -> expected tool call (PDF "Testing": 150+ utterances,
+# accuracy per language and latency; gate >= 85% by week 4, >= 90% at done).
+#
+# Fields
+#   id           unique id, prefix = language label
+#   lang         hi (Devanagari) | hinglish (Roman Hindi) | en | ta | te | bn | kn | mr
+#   text         what the user says (the turn being scored)
+#   history      optional earlier user turns, run first (memory follow-ups)
+#   expect_tool  tool name, or null for plain Q&A / small talk (no tool call)
+#   expect_args  SUBSET of arguments that must match. Numbers compare as numbers;
+#                free-text keys (query, text, title, content) pass when every
+#                expected word appears in the actual value (case-insensitive);
+#                other keys compare case-insensitively. {} = any arguments.
+#   tags         free labels for filtering (tools/golden_eval.py --tag)
+#
+# Validated by tests/golden/test_golden_set.py (no LLM calls). Scored by
+# tools/golden_eval.py against a real or fake brain.
+
+items:
+  # ---------------------------------------------------------------- Hindi (Devanagari)
+  - {id: hi-001, lang: hi, text: "क्रोम खोलो", expect_tool: open_app, expect_args: {name: chrome}, tags: [app]}
+  - {id: hi-002, lang: hi, text: "नोटपैड खोलो", expect_tool: open_app, expect_args: {name: notepad}, tags: [app]}
+  - {id: hi-003, lang: hi, text: "कैलकुलेटर चालू करो", expect_tool: open_app, expect_args: {name: calculator}, tags: [app]}
+  - {id: hi-004, lang: hi, text: "पेंट खोल दो", expect_tool: open_app, expect_args: {name: paint}, tags: [app]}
+  - {id: hi-005, lang: hi, text: "फ़ाइल मैनेजर खोलो", expect_tool: open_app, expect_args: {name: file_manager}, tags: [app]}
+  - {id: hi-006, lang: hi, text: "वर्ड खोलो", expect_tool: open_app, expect_args: {name: word}, tags: [app]}
+  - {id: hi-007, lang: hi, text: "सेटिंग्स खोलो", expect_tool: open_app, expect_args: {name: settings}, tags: [app]}
+  - {id: hi-008, lang: hi, text: "कैमरा चालू करो", expect_tool: open_app, expect_args: {name: camera}, tags: [app]}
+  - {id: hi-009, lang: hi, text: "क्रोम बंद करो", expect_tool: close_app, expect_args: {name: chrome}, tags: [app]}
+  - {id: hi-010, lang: hi, text: "नोटपैड बंद कर दो", expect_tool: close_app, expect_args: {name: notepad}, tags: [app]}
+  - {id: hi-011, lang: hi, text: "एक्सेल बंद करो", expect_tool: close_app, expect_args: {name: excel}, tags: [app]}
+  - {id: hi-012, lang: hi, text: "गूगल पर आज का मौसम खोजो", expect_tool: web_search, expect_args: {}, tags: [search]}
+  - {id: hi-013, lang: hi, text: "इंटरनेट पर दिल्ली की ट्रेन का टाइम सर्च करो", expect_tool: web_search, expect_args: {}, tags: [search]}
+  - {id: hi-014, lang: hi, text: "यूट्यूब पर अरिजीत सिंह के गाने चलाओ", expect_tool: youtube_search, expect_args: {}, tags: [search, media]}
+  - {id: hi-015, lang: hi, text: "यूट्यूब पर भजन लगाओ", expect_tool: youtube_search, expect_args: {}, tags: [search, media]}
+  - {id: hi-016, lang: hi, text: "आवाज़ 40 कर दो", expect_tool: set_volume, expect_args: {level: 40}, tags: [volume]}
+  - {id: hi-017, lang: hi, text: "वॉल्यूम पचास प्रतिशत करो", expect_tool: set_volume, expect_args: {level: 50}, tags: [volume, number-words]}
+  - {id: hi-018, lang: hi, text: "आवाज़ बढ़ाओ", expect_tool: change_volume, expect_args: {direction: up}, tags: [volume]}
+  - {id: hi-019, lang: hi, text: "आवाज़ थोड़ी कम करो", expect_tool: change_volume, expect_args: {direction: down}, tags: [volume]}
+  - {id: hi-020, lang: hi, text: "आवाज़ बिल्कुल बंद कर दो", expect_tool: change_volume, expect_args: {direction: mute}, tags: [volume]}
+  - {id: hi-021, lang: hi, text: "म्यूट हटाओ", expect_tool: change_volume, expect_args: {direction: unmute}, tags: [volume]}
+  - {id: hi-022, lang: hi, text: "लिखो नमस्ते सब लोग", expect_tool: type_text, expect_args: {text: "नमस्ते सब लोग"}, tags: [typing]}
+  - {id: hi-023, lang: hi, text: "फ़ाइल सेव करो", expect_tool: press_shortcut, expect_args: {shortcut: save}, tags: [shortcut]}
+  - {id: hi-024, lang: hi, text: "सब कुछ सेलेक्ट करो", expect_tool: press_shortcut, expect_args: {shortcut: select_all}, tags: [shortcut]}
+  - {id: hi-025, lang: hi, text: "इसे कॉपी करो", expect_tool: press_shortcut, expect_args: {shortcut: copy}, tags: [shortcut]}
+  - {id: hi-026, lang: hi, text: "पेस्ट कर दो", expect_tool: press_shortcut, expect_args: {shortcut: paste}, tags: [shortcut]}
+  - {id: hi-027, lang: hi, text: "पेज रिफ्रेश करो", expect_tool: press_shortcut, expect_args: {shortcut: refresh}, tags: [shortcut]}
+  - {id: hi-028, lang: hi, text: "नया टैब खोलो", expect_tool: press_shortcut, expect_args: {shortcut: new_tab}, tags: [shortcut]}
+  - {id: hi-029, lang: hi, text: "नीचे स्क्रॉल करो", expect_tool: scroll, expect_args: {direction: down}, tags: [scroll]}
+  - {id: hi-030, lang: hi, text: "थोड़ा सा ऊपर स्क्रॉल करो", expect_tool: scroll, expect_args: {direction: up, amount: small}, tags: [scroll]}
+  - {id: hi-031, lang: hi, text: "स्क्रीनशॉट लो", expect_tool: take_screenshot, expect_args: {}, tags: [screen]}
+  - {id: hi-032, lang: hi, text: "बैटरी कितनी है?", expect_tool: system_status, expect_args: {}, tags: [status]}
+  - {id: hi-033, lang: hi, text: "कंप्यूटर लॉक करो", expect_tool: lock_pc, expect_args: {}, tags: [power, risky]}
+  - {id: hi-034, lang: hi, text: "कंप्यूटर बंद कर दो", expect_tool: shutdown_pc, expect_args: {}, tags: [power, risky]}
+  - {id: hi-035, lang: hi, text: "शटडाउन रद्द करो", expect_tool: cancel_shutdown, expect_args: {}, tags: [power]}
+  - {id: hi-036, lang: hi, text: "कितने बजे हैं?", expect_tool: current_time, expect_args: {}, tags: [time]}
+  - {id: hi-037, lang: hi, text: "आज कौन सी तारीख है?", expect_tool: current_time, expect_args: {}, tags: [time]}
+  - {id: hi-038, lang: hi, text: "एक नोट बनाओ कि कल दूध लाना है", expect_tool: save_note, expect_args: {}, tags: [note]}
+  - {id: hi-039, lang: hi, text: "भारत की राजधानी क्या है?", expect_tool: null, expect_args: {}, tags: [qa]}
+  - {id: hi-040, lang: hi, text: "नमस्ते, आप कैसे हैं?", expect_tool: null, expect_args: {}, tags: [qa, smalltalk]}
+
+  # ---------------------------------------------------------------- Hinglish (Roman Hindi)
+  - {id: hg-001, lang: hinglish, text: "Chrome kholo", expect_tool: open_app, expect_args: {name: chrome}, tags: [app]}
+  - {id: hg-002, lang: hinglish, text: "Notepad khol do", expect_tool: open_app, expect_args: {name: notepad}, tags: [app]}
+  - {id: hg-003, lang: hinglish, text: "Calculator chalu karo", expect_tool: open_app, expect_args: {name: calculator}, tags: [app]}
+  - {id: hg-004, lang: hinglish, text: "Edge browser kholo", expect_tool: open_app, expect_args: {name: edge}, tags: [app]}
+  - {id: hg-005, lang: hinglish, text: "Excel open karo", expect_tool: open_app, expect_args: {name: excel}, tags: [app]}
+  - {id: hg-006, lang: hinglish, text: "PowerPoint khol do", expect_tool: open_app, expect_args: {name: powerpoint}, tags: [app]}
+  - {id: hg-007, lang: hinglish, text: "Zara Paint kholo", expect_tool: open_app, expect_args: {name: paint}, tags: [app]}
+  - {id: hg-008, lang: hinglish, text: "Camera on karo", expect_tool: open_app, expect_args: {name: camera}, tags: [app]}
+  - {id: hg-009, lang: hinglish, text: "File explorer kholo", expect_tool: open_app, expect_args: {name: file_manager}, tags: [app]}
+  - {id: hg-010, lang: hinglish, text: "Chrome band karo", expect_tool: close_app, expect_args: {name: chrome}, tags: [app]}
+  - {id: hg-011, lang: hinglish, text: "Word band kar do", expect_tool: close_app, expect_args: {name: word}, tags: [app]}
+  - {id: hg-012, lang: hinglish, text: "Calculator band karo", expect_tool: close_app, expect_args: {name: calculator}, tags: [app]}
+  - {id: hg-013, lang: hinglish, text: "Google pe IPL score search karo", expect_tool: web_search, expect_args: {query: "IPL score"}, tags: [search]}
+  - {id: hg-014, lang: hinglish, text: "Internet pe paneer recipe dhundo", expect_tool: web_search, expect_args: {query: "paneer recipe"}, tags: [search]}
+  - {id: hg-015, lang: hinglish, text: "YouTube pe Arijit Singh ke gaane lagao", expect_tool: youtube_search, expect_args: {query: "Arijit Singh"}, tags: [search, media]}
+  - {id: hg-016, lang: hinglish, text: "YouTube pe Mann Ki Baat chalao", expect_tool: youtube_search, expect_args: {query: "Mann Ki Baat"}, tags: [search, media]}
+  - {id: hg-017, lang: hinglish, text: "Volume 40 kar do", expect_tool: set_volume, expect_args: {level: 40}, tags: [volume]}
+  - {id: hg-018, lang: hinglish, text: "Awaaz 70 percent karo", expect_tool: set_volume, expect_args: {level: 70}, tags: [volume]}
+  - {id: hg-019, lang: hinglish, text: "Volume full kar do", expect_tool: set_volume, expect_args: {level: 100}, tags: [volume]}
+  - {id: hg-020, lang: hinglish, text: "Awaaz badhao", expect_tool: change_volume, expect_args: {direction: up}, tags: [volume]}
+  - {id: hg-021, lang: hinglish, text: "Volume thoda kam karo", expect_tool: change_volume, expect_args: {direction: down}, tags: [volume]}
+  - {id: hg-022, lang: hinglish, text: "Mute kar do", expect_tool: change_volume, expect_args: {direction: mute}, tags: [volume]}
+  - {id: hg-023, lang: hinglish, text: "Unmute karo", expect_tool: change_volume, expect_args: {direction: unmute}, tags: [volume]}
+  - {id: hg-024, lang: hinglish, text: "Type karo hello world", expect_tool: type_text, expect_args: {text: "hello world"}, tags: [typing]}
+  - {id: hg-025, lang: hinglish, text: "Likho kal milte hain", expect_tool: type_text, expect_args: {text: "kal milte hain"}, tags: [typing]}
+  - {id: hg-026, lang: hinglish, text: "Save kar do", expect_tool: press_shortcut, expect_args: {shortcut: save}, tags: [shortcut]}
+  - {id: hg-027, lang: hinglish, text: "Undo karo", expect_tool: press_shortcut, expect_args: {shortcut: undo}, tags: [shortcut]}
+  - {id: hg-028, lang: hinglish, text: "Redo karo", expect_tool: press_shortcut, expect_args: {shortcut: redo}, tags: [shortcut]}
+  - {id: hg-029, lang: hinglish, text: "Ye tab band karo", expect_tool: press_shortcut, expect_args: {shortcut: close_tab}, tags: [shortcut]}
+  - {id: hg-030, lang: hinglish, text: "Sab windows minimize kar do", expect_tool: press_shortcut, expect_args: {shortcut: minimize_all}, tags: [shortcut]}
+  - {id: hg-031, lang: hinglish, text: "Dusri window pe jao", expect_tool: press_shortcut, expect_args: {shortcut: switch_window}, tags: [shortcut]}
+  - {id: hg-032, lang: hinglish, text: "Zoom in karo", expect_tool: press_shortcut, expect_args: {shortcut: zoom_in}, tags: [shortcut]}
+  - {id: hg-033, lang: hinglish, text: "Enter daba do", expect_tool: press_shortcut, expect_args: {shortcut: enter}, tags: [shortcut]}
+  - {id: hg-034, lang: hinglish, text: "Thoda neeche scroll karo", expect_tool: scroll, expect_args: {direction: down, amount: small}, tags: [scroll]}
+  - {id: hg-035, lang: hinglish, text: "Bahut upar scroll karo", expect_tool: scroll, expect_args: {direction: up, amount: large}, tags: [scroll]}
+  - {id: hg-036, lang: hinglish, text: "Screenshot le lo", expect_tool: take_screenshot, expect_args: {}, tags: [screen]}
+  - {id: hg-037, lang: hinglish, text: "Battery kitni bachi hai?", expect_tool: system_status, expect_args: {}, tags: [status]}
+  - {id: hg-038, lang: hinglish, text: "PC lock kar do", expect_tool: lock_pc, expect_args: {}, tags: [power, risky]}
+  - {id: hg-039, lang: hinglish, text: "Computer shutdown karo", expect_tool: shutdown_pc, expect_args: {}, tags: [power, risky]}
+  - {id: hg-040, lang: hinglish, text: "Shutdown cancel karo", expect_tool: cancel_shutdown, expect_args: {}, tags: [power]}
+  - {id: hg-041, lang: hinglish, text: "Time kya hua hai?", expect_tool: current_time, expect_args: {}, tags: [time]}
+  - {id: hg-042, lang: hinglish, text: "Ek chhutti ki application likho aur save karo", expect_tool: save_note, expect_args: {}, tags: [note]}
+  - {id: hg-043, lang: hinglish, text: "Note save karo shopping list naam se, aloo pyaaz tamatar", expect_tool: save_note, expect_args: {title: "shopping list"}, tags: [note]}
+  - {id: hg-044, lang: hinglish, text: "Tum kaun ho?", expect_tool: null, expect_args: {}, tags: [qa, smalltalk]}
+  - {id: hg-045, lang: hinglish, text: "Taj Mahal kisne banwaya tha?", expect_tool: null, expect_args: {}, tags: [qa]}
+
+  # ---------------------------------------------------------------- Memory follow-ups (2-step)
+  - {id: fu-001, lang: hinglish, history: ["Chrome kholo"], text: "Ab isko band karo", expect_tool: close_app, expect_args: {name: chrome}, tags: [memory, followup, app]}
+  - {id: fu-002, lang: hinglish, history: ["Notepad kholo"], text: "Isme likho namaste", expect_tool: type_text, expect_args: {text: "namaste"}, tags: [memory, followup, typing]}
+  - {id: fu-003, lang: hinglish, history: ["Volume 30 kar do"], text: "Thoda aur badhao", expect_tool: change_volume, expect_args: {direction: up}, tags: [memory, followup, volume]}
+  - {id: fu-004, lang: en, history: ["Open Excel"], text: "Now close it", expect_tool: close_app, expect_args: {name: excel}, tags: [memory, followup, app]}
+  - {id: fu-005, lang: hi, history: ["कैलकुलेटर खोलो"], text: "अब इसे बंद करो", expect_tool: close_app, expect_args: {name: calculator}, tags: [memory, followup, app]}
+  - {id: fu-006, lang: hinglish, history: ["YouTube pe Kishore Kumar ke gaane lagao"], text: "Ab Lata Mangeshkar ke lagao", expect_tool: youtube_search, expect_args: {query: "Lata Mangeshkar"}, tags: [memory, followup, media]}
+  - {id: fu-007, lang: ta, history: ["குரோம் திற"], text: "இப்போ அதை மூடு", expect_tool: close_app, expect_args: {name: chrome}, tags: [memory, followup, app]}
+  - {id: fu-008, lang: hinglish, history: ["Computer shutdown karo"], text: "Nahi nahi, isko cancel karo", expect_tool: cancel_shutdown, expect_args: {}, tags: [memory, followup, power]}
+
+  # ---------------------------------------------------------------- English
+  - {id: en-001, lang: en, text: "Open Chrome", expect_tool: open_app, expect_args: {name: chrome}, tags: [app]}
+  - {id: en-002, lang: en, text: "Launch Notepad", expect_tool: open_app, expect_args: {name: notepad}, tags: [app]}
+  - {id: en-003, lang: en, text: "Open the calculator", expect_tool: open_app, expect_args: {name: calculator}, tags: [app]}
+  - {id: en-004, lang: en, text: "Start Microsoft Word", expect_tool: open_app, expect_args: {name: word}, tags: [app]}
+  - {id: en-005, lang: en, text: "Open settings", expect_tool: open_app, expect_args: {name: settings}, tags: [app]}
+  - {id: en-006, lang: en, text: "Open the camera", expect_tool: open_app, expect_args: {name: camera}, tags: [app]}
+  - {id: en-007, lang: en, text: "Open file explorer", expect_tool: open_app, expect_args: {name: file_manager}, tags: [app]}
+  - {id: en-008, lang: en, text: "Open PowerPoint", expect_tool: open_app, expect_args: {name: powerpoint}, tags: [app]}
+  - {id: en-009, lang: en, text: "Open Microsoft Edge", expect_tool: open_app, expect_args: {name: edge}, tags: [app]}
+  - {id: en-010, lang: en, text: "Close Chrome", expect_tool: close_app, expect_args: {name: chrome}, tags: [app]}
+  - {id: en-011, lang: en, text: "Close Notepad", expect_tool: close_app, expect_args: {name: notepad}, tags: [app]}
+  - {id: en-012, lang: en, text: "Close Paint", expect_tool: close_app, expect_args: {name: paint}, tags: [app]}
+  - {id: en-013, lang: en, text: "Search Google for weather in Bangalore", expect_tool: web_search, expect_args: {query: "weather Bangalore"}, tags: [search]}
+  - {id: en-014, lang: en, text: "Search the web for cheap flights to Delhi", expect_tool: web_search, expect_args: {query: "flights Delhi"}, tags: [search]}
+  - {id: en-015, lang: en, text: "Look up the meaning of serendipity online", expect_tool: web_search, expect_args: {query: "serendipity"}, tags: [search]}
+  - {id: en-016, lang: en, text: "Play old Kishore Kumar songs on YouTube", expect_tool: youtube_search, expect_args: {query: "Kishore Kumar"}, tags: [search, media]}
+  - {id: en-017, lang: en, text: "Find cricket highlights on YouTube", expect_tool: youtube_search, expect_args: {query: "cricket highlights"}, tags: [search, media]}
+  - {id: en-018, lang: en, text: "Set the volume to 40", expect_tool: set_volume, expect_args: {level: 40}, tags: [volume]}
+  - {id: en-019, lang: en, text: "Volume twenty five percent", expect_tool: set_volume, expect_args: {level: 25}, tags: [volume, number-words]}
+  - {id: en-020, lang: en, text: "Turn the volume up", expect_tool: change_volume, expect_args: {direction: up}, tags: [volume]}
+  - {id: en-021, lang: en, text: "Make it a bit quieter", expect_tool: change_volume, expect_args: {direction: down}, tags: [volume]}
+  - {id: en-022, lang: en, text: "Mute the sound", expect_tool: change_volume, expect_args: {direction: mute}, tags: [volume]}
+  - {id: en-023, lang: en, text: "Unmute the speakers", expect_tool: change_volume, expect_args: {direction: unmute}, tags: [volume]}
+  - {id: en-024, lang: en, text: "Type good morning everyone", expect_tool: type_text, expect_args: {text: "good morning everyone"}, tags: [typing]}
+  - {id: en-025, lang: en, text: "Save the file", expect_tool: press_shortcut, expect_args: {shortcut: save}, tags: [shortcut]}
+  - {id: en-026, lang: en, text: "Copy this", expect_tool: press_shortcut, expect_args: {shortcut: copy}, tags: [shortcut]}
+  - {id: en-027, lang: en, text: "Paste it here", expect_tool: press_shortcut, expect_args: {shortcut: paste}, tags: [shortcut]}
+  - {id: en-028, lang: en, text: "Select all", expect_tool: press_shortcut, expect_args: {shortcut: select_all}, tags: [shortcut]}
+  - {id: en-029, lang: en, text: "Open a new tab", expect_tool: press_shortcut, expect_args: {shortcut: new_tab}, tags: [shortcut]}
+  - {id: en-030, lang: en, text: "Close this tab", expect_tool: press_shortcut, expect_args: {shortcut: close_tab}, tags: [shortcut]}
+  - {id: en-031, lang: en, text: "Refresh the page", expect_tool: press_shortcut, expect_args: {shortcut: refresh}, tags: [shortcut]}
+  - {id: en-032, lang: en, text: "Zoom out", expect_tool: press_shortcut, expect_args: {shortcut: zoom_out}, tags: [shortcut]}
+  - {id: en-033, lang: en, text: "Minimize all windows", expect_tool: press_shortcut, expect_args: {shortcut: minimize_all}, tags: [shortcut]}
+  - {id: en-034, lang: en, text: "Switch to the other window", expect_tool: press_shortcut, expect_args: {shortcut: switch_window}, tags: [shortcut]}
+  - {id: en-035, lang: en, text: "Undo that", expect_tool: press_shortcut, expect_args: {shortcut: undo}, tags: [shortcut]}
+  - {id: en-036, lang: en, text: "Press enter", expect_tool: press_shortcut, expect_args: {shortcut: enter}, tags: [shortcut]}
+  - {id: en-037, lang: en, text: "Scroll down a lot", expect_tool: scroll, expect_args: {direction: down, amount: large}, tags: [scroll]}
+  - {id: en-038, lang: en, text: "Scroll up a little", expect_tool: scroll, expect_args: {direction: up, amount: small}, tags: [scroll]}
+  - {id: en-039, lang: en, text: "Take a screenshot", expect_tool: take_screenshot, expect_args: {}, tags: [screen]}
+  - {id: en-040, lang: en, text: "What is my battery level?", expect_tool: system_status, expect_args: {}, tags: [status]}
+  - {id: en-041, lang: en, text: "How much CPU and memory is being used?", expect_tool: system_status, expect_args: {}, tags: [status]}
+  - {id: en-042, lang: en, text: "Lock my computer", expect_tool: lock_pc, expect_args: {}, tags: [power, risky]}
+  - {id: en-043, lang: en, text: "Shut down the computer", expect_tool: shutdown_pc, expect_args: {}, tags: [power, risky]}
+  - {id: en-044, lang: en, text: "Cancel the shutdown", expect_tool: cancel_shutdown, expect_args: {}, tags: [power]}
+  - {id: en-045, lang: en, text: "What time is it?", expect_tool: current_time, expect_args: {}, tags: [time]}
+  - {id: en-046, lang: en, text: "Save a note called groceries with milk, eggs and bread", expect_tool: save_note, expect_args: {title: "groceries"}, tags: [note]}
+  - {id: en-047, lang: en, text: "Who wrote the Ramayana?", expect_tool: null, expect_args: {}, tags: [qa]}
+  - {id: en-048, lang: en, text: "Tell me a short joke", expect_tool: null, expect_args: {}, tags: [qa, smalltalk]}
+
+  # ---------------------------------------------------------------- Tamil
+  - {id: ta-001, lang: ta, text: "குரோம் திற", expect_tool: open_app, expect_args: {name: chrome}, tags: [app]}
+  - {id: ta-002, lang: ta, text: "நோட்பேட் திறக்கவும்", expect_tool: open_app, expect_args: {name: notepad}, tags: [app]}
+  - {id: ta-003, lang: ta, text: "கால்குலேட்டரைத் திற", expect_tool: open_app, expect_args: {name: calculator}, tags: [app]}
+  - {id: ta-004, lang: ta, text: "குரோமை மூடு", expect_tool: close_app, expect_args: {name: chrome}, tags: [app]}
+  - {id: ta-005, lang: ta, text: "நோட்பேடை மூடு", expect_tool: close_app, expect_args: {name: notepad}, tags: [app]}
+  - {id: ta-006, lang: ta, text: "யூடியூபில் இளையராஜா பாடல்கள் போடு", expect_tool: youtube_search, expect_args: {}, tags: [search, media]}
+  - {id: ta-007, lang: ta, text: "கூகுளில் இன்றைய வானிலையைத் தேடு", expect_tool: web_search, expect_args: {}, tags: [search]}
+  - {id: ta-008, lang: ta, text: "ஒலியை 40 ஆக வை", expect_tool: set_volume, expect_args: {level: 40}, tags: [volume]}
+  - {id: ta-009, lang: ta, text: "சத்தத்தை அதிகரி", expect_tool: change_volume, expect_args: {direction: up}, tags: [volume]}
+  - {id: ta-010, lang: ta, text: "சத்தத்தைக் குறை", expect_tool: change_volume, expect_args: {direction: down}, tags: [volume]}
+  - {id: ta-011, lang: ta, text: "ஒலியை முடக்கு", expect_tool: change_volume, expect_args: {direction: mute}, tags: [volume]}
+  - {id: ta-012, lang: ta, text: "ஸ்கிரீன்ஷாட் எடு", expect_tool: take_screenshot, expect_args: {}, tags: [screen]}
+  - {id: ta-013, lang: ta, text: "பேட்டரி எவ்வளவு இருக்கு?", expect_tool: system_status, expect_args: {}, tags: [status]}
+  - {id: ta-014, lang: ta, text: "கணினியை லாக் செய்", expect_tool: lock_pc, expect_args: {}, tags: [power, risky]}
+  - {id: ta-015, lang: ta, text: "கணினியை அணைத்துவிடு", expect_tool: shutdown_pc, expect_args: {}, tags: [power, risky]}
+  - {id: ta-016, lang: ta, text: "ஷட்டவுனை ரத்து செய்", expect_tool: cancel_shutdown, expect_args: {}, tags: [power]}
+  - {id: ta-017, lang: ta, text: "இப்போ மணி என்ன?", expect_tool: current_time, expect_args: {}, tags: [time]}
+  - {id: ta-018, lang: ta, text: "கீழே ஸ்க்ரோல் செய்", expect_tool: scroll, expect_args: {direction: down}, tags: [scroll]}
+  - {id: ta-019, lang: ta, text: "சேவ் செய்", expect_tool: press_shortcut, expect_args: {shortcut: save}, tags: [shortcut]}
+  - {id: ta-020, lang: ta, text: "இந்தியாவின் தலைநகரம் எது?", expect_tool: null, expect_args: {}, tags: [qa]}
+
+  # ---------------------------------------------------------------- Telugu
+  - {id: te-001, lang: te, text: "క్రోమ్ తెరువు", expect_tool: open_app, expect_args: {name: chrome}, tags: [app]}
+  - {id: te-002, lang: te, text: "నోట్‌ప్యాడ్ ఓపెన్ చేయి", expect_tool: open_app, expect_args: {name: notepad}, tags: [app]}
+  - {id: te-003, lang: te, text: "పెయింట్ తెరువు", expect_tool: open_app, expect_args: {name: paint}, tags: [app]}
+  - {id: te-004, lang: te, text: "ఎక్సెల్ తెరువు", expect_tool: open_app, expect_args: {name: excel}, tags: [app]}
+  - {id: te-005, lang: te, text: "క్రోమ్ మూసివేయి", expect_tool: close_app, expect_args: {name: chrome}, tags: [app]}
+  - {id: te-006, lang: te, text: "యూట్యూబ్‌లో ఘంటసాల పాటలు ప్లే చేయి", expect_tool: youtube_search, expect_args: {}, tags: [search, media]}
+  - {id: te-007, lang: te, text: "గూగుల్‌లో హైదరాబాద్ వాతావరణం వెతుకు", expect_tool: web_search, expect_args: {}, tags: [search]}
+  - {id: te-008, lang: te, text: "వాల్యూమ్ 60 కి పెట్టు", expect_tool: set_volume, expect_args: {level: 60}, tags: [volume]}
+  - {id: te-009, lang: te, text: "సౌండ్ పెంచు", expect_tool: change_volume, expect_args: {direction: up}, tags: [volume]}
+  - {id: te-010, lang: te, text: "సౌండ్ తగ్గించు", expect_tool: change_volume, expect_args: {direction: down}, tags: [volume]}
+  - {id: te-011, lang: te, text: "మ్యూట్ చేయి", expect_tool: change_volume, expect_args: {direction: mute}, tags: [volume]}
+  - {id: te-012, lang: te, text: "స్క్రీన్‌షాట్ తీయి", expect_tool: take_screenshot, expect_args: {}, tags: [screen]}
+  - {id: te-013, lang: te, text: "బ్యాటరీ ఎంత ఉంది?", expect_tool: system_status, expect_args: {}, tags: [status]}
+  - {id: te-014, lang: te, text: "కంప్యూటర్ లాక్ చేయి", expect_tool: lock_pc, expect_args: {}, tags: [power, risky]}
+  - {id: te-015, lang: te, text: "కంప్యూటర్ ఆపివేయి", expect_tool: shutdown_pc, expect_args: {}, tags: [power, risky]}
+  - {id: te-016, lang: te, text: "షట్‌డౌన్ రద్దు చేయి", expect_tool: cancel_shutdown, expect_args: {}, tags: [power]}
+  - {id: te-017, lang: te, text: "ఇప్పుడు టైమ్ ఎంత?", expect_tool: current_time, expect_args: {}, tags: [time]}
+  - {id: te-018, lang: te, text: "పైకి స్క్రోల్ చేయి", expect_tool: scroll, expect_args: {direction: up}, tags: [scroll]}
+  - {id: te-019, lang: te, text: "కాపీ చేయి", expect_tool: press_shortcut, expect_args: {shortcut: copy}, tags: [shortcut]}
+  - {id: te-020, lang: te, text: "మీరు ఎవరు?", expect_tool: null, expect_args: {}, tags: [qa, smalltalk]}
+
+  # ---------------------------------------------------------------- Bengali
+  - {id: bn-001, lang: bn, text: "ক্রোম খোলো", expect_tool: open_app, expect_args: {name: chrome}, tags: [app]}
+  - {id: bn-002, lang: bn, text: "নোটপ্যাড বন্ধ করো", expect_tool: close_app, expect_args: {name: notepad}, tags: [app]}
+  - {id: bn-003, lang: bn, text: "ভলিউম ৩০ করো", expect_tool: set_volume, expect_args: {level: 30}, tags: [volume, native-digits]}
+  - {id: bn-004, lang: bn, text: "ইউটিউবে রবীন্দ্রসংগীত চালাও", expect_tool: youtube_search, expect_args: {}, tags: [search, media]}
+  - {id: bn-005, lang: bn, text: "স্ক্রিনশট নাও", expect_tool: take_screenshot, expect_args: {}, tags: [screen]}
+  - {id: bn-006, lang: bn, text: "এখন কটা বাজে?", expect_tool: current_time, expect_args: {}, tags: [time]}
+
+  # ---------------------------------------------------------------- Kannada
+  - {id: kn-001, lang: kn, text: "ಕ್ರೋಮ್ ತೆರೆ", expect_tool: open_app, expect_args: {name: chrome}, tags: [app]}
+  - {id: kn-002, lang: kn, text: "ಧ್ವನಿ ಹೆಚ್ಚಿಸು", expect_tool: change_volume, expect_args: {direction: up}, tags: [volume]}
+  - {id: kn-003, lang: kn, text: "ಸ್ಕ್ರೀನ್‌ಶಾಟ್ ತೆಗೆ", expect_tool: take_screenshot, expect_args: {}, tags: [screen]}
+  - {id: kn-004, lang: kn, text: "ಬ್ಯಾಟರಿ ಎಷ್ಟಿದೆ?", expect_tool: system_status, expect_args: {}, tags: [status]}
+  - {id: kn-005, lang: kn, text: "ಕಂಪ್ಯೂಟರ್ ಲಾಕ್ ಮಾಡು", expect_tool: lock_pc, expect_args: {}, tags: [power, risky]}
+
+  # ---------------------------------------------------------------- Marathi
+  - {id: mr-001, lang: mr, text: "क्रोम उघडा", expect_tool: open_app, expect_args: {name: chrome}, tags: [app]}
+  - {id: mr-002, lang: mr, text: "नोटपॅड बंद कर", expect_tool: close_app, expect_args: {name: notepad}, tags: [app]}
+  - {id: mr-003, lang: mr, text: "आवाज कमी कर", expect_tool: change_volume, expect_args: {direction: down}, tags: [volume]}
+  - {id: mr-004, lang: mr, text: "स्क्रीनशॉट घे", expect_tool: take_screenshot, expect_args: {}, tags: [screen]}
+  - {id: mr-005, lang: mr, text: "किती वाजले?", expect_tool: current_time, expect_args: {}, tags: [time]}

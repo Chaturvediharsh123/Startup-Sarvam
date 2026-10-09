@@ -1,0 +1,60 @@
+# Tunable settings, one section per workstream (PDF "Config, logging, testing").
+#
+# Each key is the lower-case name of an .env setting: `history_turns: 4` here is
+# the same as `HISTORY_TURNS=4` in .env. Precedence: this file < .env < environment.
+# The API key is NEVER put here; it lives only in .env (SARVAM_API_KEY).
+
+sarvam:
+  sarvam_stt_realtime_model: saaras:v3-realtime
+  sarvam_stt_model: saaras:v4
+  sarvam_llm_model: sarvam-105b
+  sarvam_llm_reasoning: low        # low | medium | high | max | none (fastest)
+  sarvam_tts_model: bulbul:v3
+  llm_timeout_s: 12
+
+audio:
+  sample_rate: 16000               # Sarvam realtime STT accepts 8000 or 16000 only
+  chunk_ms: 100
+  mic_device: ""                   # empty = default mic; or a device index / name
+  speaker_device: ""               # empty = default speaker; or a device index / name
+  noise_gate: 0.0                  # 0.0-1.0; chunks quieter than this count as silence
+  barge_in: false                  # true keeps the mic open while speaking (headphones only)
+
+stt:
+  language_hint: ""                # empty = auto-detect; e.g. hi-IN
+  vad_silence_ms: 500              # server end-of-speech pause
+  local_silence_ms: 900            # local backup if the server VAD misses the end
+  stt_fallback_after: 3            # failed reconnects before switching to push-to-talk
+  wake_word: ""                    # empty = off
+
+brain:
+  history_turns: 4                 # PDF: last 4-6 turns
+  default_language: hi-IN
+  filler_after_ms: 1200            # speak "ek second..." when the LLM is slower than this
+  max_turn_s: 20
+
+tts:
+  tts_speaker: priya               # default voice
+  tts_sample_rate: 24000
+  tts_pace: 1.0
+  tts_voices:                      # voice per language (bulbul:v3 speakers)
+    hi-IN: priya
+    en-IN: ishita
+    ta-IN: kavitha
+    te-IN: kavya
+    kn-IN: roopa
+    bn-IN: neha
+    mr-IN: shruti
+    gu-IN: pooja
+
+safety:
+  confirm_timeout_s: 10            # PDF: silence or 10 s = no
+  max_actions_per_minute: 10
+  shutdown_delay_s: 60
+  action_timeout_s: 5
+  stop_words_enabled: true         # "ruko" / "stop" interrupts while the assistant is busy
+
+ui:
+  ui_font_size: 20                 # PDF: 18+ default
+  ui_theme: dark                   # dark | light | high_contrast
+  ui_language: en                  # en | hi
