@@ -11,6 +11,9 @@
 #                free-text keys (query, text, title, content) pass when every
 #                expected word appears in the actual value (case-insensitive);
 #                other keys compare case-insensitively. {} = any arguments.
+#   expect_clarify  optional, only with expect_tool: null. true = the brain must ask
+#                a question (reply contains "?") instead of guessing a missing or
+#                ambiguous value. Tag these items "clarify".
 #   tags         free labels for filtering (tools/golden_eval.py --tag)
 #
 # Validated by tests/golden/test_golden_set.py (no LLM calls). Scored by
@@ -115,6 +118,26 @@ items:
   - {id: fu-006, lang: hinglish, history: ["YouTube pe Kishore Kumar ke gaane lagao"], text: "Ab Lata Mangeshkar ke lagao", expect_tool: youtube_search, expect_args: {query: "Lata Mangeshkar"}, tags: [memory, followup, media]}
   - {id: fu-007, lang: ta, history: ["குரோம் திற"], text: "இப்போ அதை மூடு", expect_tool: close_app, expect_args: {name: chrome}, tags: [memory, followup, app]}
   - {id: fu-008, lang: hinglish, history: ["Computer shutdown karo"], text: "Nahi nahi, isko cancel karo", expect_tool: cancel_shutdown, expect_args: {}, tags: [memory, followup, power]}
+  - {id: fu-009, lang: en, history: ["Open Chrome", "Now close it"], text: "Open it again", expect_tool: open_app, expect_args: {name: chrome}, tags: [memory, followup, app]}
+  - {id: fu-010, lang: hinglish, history: ["Notepad kholo", "Isko band karo"], text: "Phir se kholo", expect_tool: open_app, expect_args: {name: notepad}, tags: [memory, followup, app]}
+
+  # ---------------------------------------------------------------- Clarification (missing or ambiguous values)
+  # No history, so "it" / "isko" has nothing to refer to. The brain must ask, never guess.
+  - {id: en-049, lang: en, text: "Open it again", expect_tool: null, expect_args: {}, expect_clarify: true, tags: [clarify, app]}
+  - {id: en-050, lang: en, text: "Close it", expect_tool: null, expect_args: {}, expect_clarify: true, tags: [clarify, app, risky]}
+  - {id: en-051, lang: en, text: "Set the volume", expect_tool: null, expect_args: {}, expect_clarify: true, tags: [clarify, volume]}
+  - {id: en-052, lang: en, text: "Search on YouTube", expect_tool: null, expect_args: {}, expect_clarify: true, tags: [clarify, search, media]}
+  - {id: en-053, lang: en, text: "Type something for me", expect_tool: null, expect_args: {}, expect_clarify: true, tags: [clarify, typing]}
+  - {id: hg-046, lang: hinglish, text: "Phir se kholo", expect_tool: null, expect_args: {}, expect_clarify: true, tags: [clarify, app]}
+  - {id: hg-047, lang: hinglish, text: "Isko band karo", expect_tool: null, expect_args: {}, expect_clarify: true, tags: [clarify, app, risky]}
+  - {id: hg-048, lang: hinglish, text: "Volume set karo", expect_tool: null, expect_args: {}, expect_clarify: true, tags: [clarify, volume]}
+  - {id: hg-049, lang: hinglish, text: "YouTube pe search karo", expect_tool: null, expect_args: {}, expect_clarify: true, tags: [clarify, search, media]}
+  - {id: hg-050, lang: hinglish, text: "Kuch type karo", expect_tool: null, expect_args: {}, expect_clarify: true, tags: [clarify, typing]}
+  - {id: hi-041, lang: hi, text: "फिर से खोलो", expect_tool: null, expect_args: {}, expect_clarify: true, tags: [clarify, app]}
+  - {id: hi-042, lang: hi, text: "इसे बंद करो", expect_tool: null, expect_args: {}, expect_clarify: true, tags: [clarify, app, risky]}
+  - {id: hi-043, lang: hi, text: "वॉल्यूम सेट करो", expect_tool: null, expect_args: {}, expect_clarify: true, tags: [clarify, volume]}
+  - {id: hi-044, lang: hi, text: "गूगल पर सर्च करो", expect_tool: null, expect_args: {}, expect_clarify: true, tags: [clarify, search]}
+  - {id: hi-045, lang: hi, text: "कुछ टाइप करो", expect_tool: null, expect_args: {}, expect_clarify: true, tags: [clarify, typing]}
 
   # ---------------------------------------------------------------- English
   - {id: en-001, lang: en, text: "Open Chrome", expect_tool: open_app, expect_args: {name: chrome}, tags: [app]}
