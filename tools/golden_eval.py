@@ -100,6 +100,7 @@ class GoldenItem:
     expect_args: dict[str, Any] = field(default_factory=dict)
     tags: tuple[str, ...] = ()
     history: tuple[str, ...] = ()
+    expect_clarify: bool = False
 
 
 @dataclass
@@ -139,6 +140,7 @@ def load_items(path: Path = GOLDEN_FILE) -> list[GoldenItem]:
                 expect_args=dict(raw.get("expect_args") or {}),
                 tags=tuple(raw.get("tags") or ()),
                 history=tuple(str(h) for h in raw.get("history") or ()),
+                expect_clarify=bool(raw.get("expect_clarify", False)),
             )
         )
     return items
@@ -192,11 +194,20 @@ def match_args(expected: dict[str, Any], actual: dict[str, Any]) -> list[str]:
     return problems
 
 
-def score(item: GoldenItem, tool_call: Any) -> tuple[bool, str]:
-    """Compare a brain ``tool_call`` (or ``None``) with the item's expectation."""
+def is_question(reply: str) -> bool:
+    """True when a spoken reply asks the user something (Hindi and Hinglish use "?" too)."""
+    return "?" in reply
+
+
+def score(item: GoldenItem, tool_call: Any, reply: str = "") -> tuple[bool, str]:
+    """Compare a brain ``tool_call`` (or ``None``) and its ``reply`` with the expectation."""
     got_name = getattr(tool_call, "name", None) if tool_call is not None else None
     if item.expect_tool is None:
-        return (True, "") if got_name is None else (False, f"expected no tool, got {got_name}")
+        if got_name is not None:
+            return False, f"expected no tool, got {got_name}"
+        if item.expect_clarify and not is_question(reply):
+            return False, f"expected a clarifying question, got {reply!r}"
+        return True, ""
     if got_name is None:
         return False, f"expected {item.expect_tool}, got no tool call"
     if got_name != item.expect_tool:
@@ -242,7 +253,8 @@ def run_item(factory: BrainFactory, item: GoldenItem, stt_hint: bool = True) -> 
     except Exception as exc:  # noqa: BLE001 - one bad item must not stop the run
         return ItemResult(**base, ok=False, reason=f"error: {exc!r}", latency_ms=0.0)
     call = getattr(result, "tool_call", None)
-    ok, reason = score(item, call)
+    reply = str(getattr(result, "reply", "") or "")
+    ok, reason = score(item, call, reply)
     return ItemResult(
         **base,
         ok=ok,
@@ -250,7 +262,7 @@ def run_item(factory: BrainFactory, item: GoldenItem, stt_hint: bool = True) -> 
         latency_ms=latency,
         got_tool=getattr(call, "name", None) if call is not None else None,
         got_args=dict(getattr(call, "args", None) or {}) if call is not None else {},
-        reply=str(getattr(result, "reply", "") or ""),
+        reply=reply,
     )
 
 
