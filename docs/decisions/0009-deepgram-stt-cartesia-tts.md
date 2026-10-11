@@ -32,9 +32,10 @@ We will measure that on recorded speech before relying on it.
 - **Keys:** `DEEPGRAM_API_KEY` and `CARTESIA_API_KEY` in `.env` only, never in YAML or code.
 - **LLM:** not decided here. `sarvam-105b` remains a candidate. The choice will come from
   the golden-set evaluation (`tools/golden_eval.py`).
-- **Order:** this is Phase 5. The new clients are built after the text-only language
-  layer passes its gate (>= 90% on en + hi + Hinglish). Until then the Sarvam clients
-  and the fakes stay in place, and nothing is deleted.
+- **Order:** the speech clients are built in parallel with the brain work, because they
+  sit behind the interfaces in `core/interfaces.py`. Each client gets its own PR. The
+  Sarvam clients and the fakes stay in place until the wiring PR switches `main.py`
+  over, and nothing is deleted before then.
 
 ## Consequences
 
