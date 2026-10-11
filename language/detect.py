@@ -155,3 +155,21 @@ def to_tts_language(code: str | None) -> str:
 def to_realtime_stt_code(code: str) -> str:
     """Convert a code for the realtime STT WebSocket, which spells Odia ``or-IN``."""
     return "or-IN" if normalise_code(code) == "od-IN" else code
+
+
+# Languages Cartesia sonic-3.6 speaks (docs.cartesia.ai, TTS models page, checked 2026-10-11).
+CARTESIA_LANGUAGES = frozenset({
+    "en", "fr", "de", "es", "pt", "zh", "ja", "hi", "it", "ko", "nl", "pl", "ru", "sv", "tr",
+    "tl", "bg", "ro", "ar", "cs", "el", "fi", "hr", "ms", "sk", "da", "ta", "uk", "hu", "no",
+    "vi", "bn", "th", "he", "ka", "id", "te", "gu", "kn", "ml", "mr", "pa", "or", "ur",
+})
+
+
+def to_cartesia_language(code: str | None, default: str = "hi") -> str:
+    """Map our code (``hi-IN``) to a Cartesia language (``hi``); ``default`` if unsupported."""
+    norm = normalise_code(code)
+    if norm is None:
+        return default
+    base = norm.split("-")[0].lower()
+    base = {"od": "or", "as": "bn"}.get(base, base)
+    return base if base in CARTESIA_LANGUAGES else default
