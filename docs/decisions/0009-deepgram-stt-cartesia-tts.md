@@ -1,7 +1,7 @@
 # 0009. Deepgram for speech-to-text, Cartesia for text-to-speech
 
 - Status: Accepted
-- Date: 2026-10-11
+- Date: 2026-10-11 (updated 2026-10-11 after live mic tests)
 - Supersedes: the Sarvam parts of 0008 (Bulbul HTTP streaming)
 
 ## Context
@@ -18,14 +18,16 @@ Checked against the official docs on 2026-10-11:
 - Cartesia `sonic-3.6` supports Hindi (`hi`) and 10 more Indian languages. Its docs say
   it has expanded support for Hindi written in Latin script (Hinglish).
 
-Not verified yet: how well either one handles Hindi-English mixing within one sentence.
-We will measure that on recorded speech before relying on it.
+How each one handles Hindi-English mixing within one sentence was measured with live mic
+tests (see "Live test results" below).
 
 ## Decision
 
-- **STT:** Deepgram `nova-3` with `language=multi`. Start with push-to-talk on recorded
-  clips (pre-recorded API), then move to streaming once the text pipeline passes.
-  Recorded clips are repeatable, so STT errors can be told apart from brain errors.
+- **STT:** Deepgram `nova-3`.
+  - Push-to-talk (`stt/deepgram_batch.py`): `language=multi`.
+  - Live streaming (`stt/deepgram_realtime.py`): `language=hi`, `endpointing=500`. In
+    this mode Deepgram tags no word languages, so the language is detected from the
+    transcript with `language.detect.detect_language`.
 - **TTS:** Cartesia `sonic-3.6`, pinned to a dated snapshot in production.
 - **Language codes:** inside the app we keep BCP-47 codes (`hi-IN`, `en-IN`). Mapping to
   provider codes (`hi`, `en`) happens only at the edges, in `language/`.
@@ -37,10 +39,28 @@ We will measure that on recorded speech before relying on it.
   Sarvam clients and the fakes stay in place until the wiring PR switches `main.py`
   over, and nothing is deleted before then.
 
+## Live test results (2026-10-11, one speaker, laptop mic)
+
+| | Push-to-talk, `multi` | Streaming, `multi` | Streaming, `hi` |
+|---|---|---|---|
+| "Notepad kholo" | `Notepad खोलो.` | `Notepad colo` or `Notepad.` | `Notepad खोलो.` |
+| "Volume chalees kar do" | `Volume चालीस कर दो.` | `Volume.` 2 of 3 times (800 ms endpointing) | `Volume चालीस कर दो.` |
+| "Set volume to forty percent" | correct | correct | correct, Roman letters |
+| Delay | 1.5-2.2 s after a 5 s clip | ~0.8-1.2 s (500 ms), ~1.2-2.5 s (800 ms) | ~0.5-1.2 s |
+
+- `multi` works for whole recordings but in streaming it often heard short Hindi words as
+  English or dropped them. A longer `endpointing` (800 ms) was slower and did not fix it.
+- Real transcripts are mixed-script: English words in Roman letters, Hindi words in
+  Devanagari. App names occasionally arrive in Devanagari (`नोटपैद`).
+- Names are misheard ("Arijit" as अर्जित / अद्वित). Keyterm prompting is still to be tried.
+- Cartesia `sonic-3.6`: first audio in ~150-230 ms (609 ms on the first ever request);
+  Roman-script Hinglish sounds close to natural Hindi, so ADR 0002 stands.
+
 ## Consequences
 
-- `stt/` and `tts/` get new Deepgram and Cartesia clients behind the existing
-  interfaces in `core/interfaces.py`. Fakes and mock mode are unchanged.
+- `stt/` and `tts/` have new Deepgram and Cartesia clients behind the existing
+  interfaces in `core/interfaces.py` (#10, #11, #13). Fakes and mock mode are unchanged.
+- The golden set should include mixed-script transcripts, since that is what STT sends.
 - `core/config.py` must stop requiring `SARVAM_API_KEY` when the LLM is not Sarvam
   (tech lead review, `core/` is owned by the tech lead).
 - `language.detect.to_tts_language` and `to_realtime_stt_code` are Sarvam-specific and
