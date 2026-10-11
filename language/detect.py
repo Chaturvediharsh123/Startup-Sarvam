@@ -152,6 +152,18 @@ def to_tts_language(code: str | None) -> str:
     return "en-IN"
 
 
+def from_provider_code(code: str | None) -> str | None:
+    """Map a provider language code (Deepgram ``hi``, ``en-US``, ``hi-Latn``) to ours (``hi-IN``).
+
+    Returns ``None`` when there is no code, so the caller can fall back to a hint.
+    """
+    norm = normalise_code(code)
+    if norm is None:
+        return None
+    base = norm.split("-")[0].lower()
+    return "od-IN" if base in ("or", "od") else f"{base}-IN"
+
+
 def to_realtime_stt_code(code: str) -> str:
     """Convert a code for the realtime STT WebSocket, which spells Odia ``or-IN``."""
     return "or-IN" if normalise_code(code) == "od-IN" else code
