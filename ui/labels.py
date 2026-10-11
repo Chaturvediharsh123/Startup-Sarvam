@@ -14,11 +14,27 @@ LABELS: dict[str, dict[str, str]] = {
     # window and sections
     "app_title": {"en": "Sarvam Sahayak", "hi": "सर्वम सहायक"},
     "you_said": {"en": "You said", "hi": "आपने कहा"},
+    "transcript_empty": {
+        "en": "Your words will appear here.",
+        "hi": "आपकी बातें यहाँ दिखाई देंगी।",
+    },
     "assistant_said": {"en": "Assistant said", "hi": "सहायक ने कहा"},
+    "welcome_message": {
+        "en": "Namaste! I'm ready to help.",
+        "hi": "नमस्ते! मैं आपकी मदद के लिए तैयार हूँ।",
+    },
+    "welcome_hint": {
+        "en": "Type a command below, or use Hold to talk.",
+        "hi": "नीचे आदेश लिखें या बोलने के लिए बटन दबाएँ।",
+    },
     "assistant_did": {"en": "Assistant did", "hi": "सहायक ने किया"},
     "nothing_yet": {"en": "Nothing yet", "hi": "अभी कुछ नहीं"},
     "activity": {"en": "Activity (last 20)", "hi": "गतिविधि (पिछले 20)"},
     "no_activity": {"en": "No actions yet", "hi": "अभी कोई काम नहीं हुआ"},
+    "activity_empty": {
+        "en": "Your recent actions will appear here.",
+        "hi": "आपकी हाल की गतिविधियाँ यहाँ दिखाई देंगी।",
+    },
     "audit": {"en": "Safety log", "hi": "सुरक्षा लॉग"},
     "audit_show": {"en": "Show safety log", "hi": "सुरक्षा लॉग दिखाएँ"},
     "audit_hide": {"en": "Hide safety log", "hi": "सुरक्षा लॉग छिपाएँ"},
@@ -43,6 +59,10 @@ LABELS: dict[str, dict[str, str]] = {
     "yes_no_hint": {"en": "Say or type yes / no", "hi": "हाँ या ना बोलें या लिखें"},
     "stopped": {"en": "Stopped", "hi": "रोक दिया"},
     "problem": {"en": "Problem: {message}", "hi": "समस्या: {message}"},
+    "speech_unavailable": {
+        "en": "Speech recognition is not available here.",
+        "hi": "यहाँ वाक् पहचान उपलब्ध नहीं है।",
+    },
     "live_failed": {"en": "Could not start live mode", "hi": "लाइव मोड शुरू नहीं हुआ"},
     # health dots (one per module)
     "mod_audio": {"en": "Mic", "hi": "माइक"},

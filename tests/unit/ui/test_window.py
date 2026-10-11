@@ -16,6 +16,7 @@ from core.bus import EventBus
 from core.config import Settings
 from core.events import (
     ActionResult,
+    ErrorRaised,
     FinalTranscript,
     HealthChanged,
     LanguageDetected,
@@ -141,6 +142,16 @@ def pump(app: Any, until: Callable[[], bool], timeout: float = 3.0) -> None:
 def test_window_shows_bus_events(make_app: Callable[..., Any], bus: EventBus) -> None:
     orch = FakeOrchestrator()
     app = make_app(orch, audit=FakeAudit())
+    assert app.activity.text() == "Your recent actions will appear here."
+    bus.publish(
+        ErrorRaised("Push-to-talk needs speech recognition (not available here)", "stt")
+    )
+    pump(
+        app,
+        lambda: app.status_bar.detail_label.cget("text")
+        == "Speech recognition is not available here.",
+    )
+    assert app.status_bar.detail_label.cget("text_color") == app.look.palette.muted
     assert app.status_bar.dots["stt"].cget("text").endswith("✗")  # seeded from health()
     assert "outside the notes folder" in app.audit_view.text()  # seeded from the audit log
     for event in (
@@ -160,6 +171,7 @@ def test_window_shows_bus_events(make_app: Callable[..., Any], bus: EventBus) ->
         bus.publish(event)
     pump(app, lambda: app.status_bar.state_label.cget("text") == "Waiting for your yes")
     transcript = app.transcript.text()
+    assert "Your words will appear here." not in transcript
     assert "नोटपैड खोलो" in transcript
     assert transcript.count("नोटपैड") == 1  # the partial was replaced, not duplicated
     assert transcript.endswith("आवाज़")  # the new partial is shown after the final text
@@ -173,6 +185,26 @@ def test_window_shows_bus_events(make_app: Callable[..., Any], bus: EventBus) ->
     assert app.status_bar.detail_label.cget("text") == "Say or type yes / no"
     assert app.status_bar.dots["tts"].cget("text_color") == app.look.palette.ok
     assert app.status_bar.level.get() == pytest.approx(0.5)
+
+
+def test_status_state_colours_follow_state_events(
+    make_app: Callable[..., Any], bus: EventBus
+) -> None:
+    app = make_app(FakeOrchestrator())
+    pal = app.look.palette
+    states = (
+        (TurnState.IDLE, pal.text),
+        (TurnState.LISTENING, pal.accent),
+        (TurnState.THINKING, pal.accent),
+        (TurnState.CHECKING, pal.warn),
+        (TurnState.AWAITING_YES, pal.warn),
+        (TurnState.ACTING, pal.accent),
+        (TurnState.SPEAKING, pal.ok),
+    )
+    for state, colour in states:
+        bus.publish(StateChanged(app.model.state, state))
+        pump(app, lambda state=state: app.model.state == state)
+        assert app.status_bar.state_label.cget("text_color") == colour
 
 
 def test_controls_call_the_orchestrator(make_app: Callable[..., Any]) -> None:
@@ -254,6 +286,24 @@ def test_settings_change_theme_font_and_language_live(
     assert ("set_wake_word", "sarvam") in orch.calls
     pump(app, lambda: ("set_language_hint", "en-IN") in orch.calls)
     assert app.status_bar.detail_label.cget("text").startswith("सेटिंग्स सहेजी गईं")
+
+
+def test_empty_panel_welcome_text_tracks_settings_language(
+    make_app: Callable[..., Any], settings: Settings
+) -> None:
+    app = make_app(FakeOrchestrator(), settings=replace(settings, ui_language="en"))
+    assert app.transcript.text() == "Your words will appear here."
+    assert app.reply.said.cget("text") == "Namaste! I'm ready to help."
+    assert app.reply.said.cget("text_color") == app.look.palette.text
+    assert app.reply.did.cget("text") == "Type a command below, or use Hold to talk."
+    assert app.reply.did.cget("text_color") == app.look.palette.muted
+
+    app.apply_settings({"UI_LANGUAGE": "hi"})
+    assert app.transcript.text() == "आपकी बातें यहाँ दिखाई देंगी।"
+    assert app.reply.said.cget("text") == "नमस्ते! मैं आपकी मदद के लिए तैयार हूँ।"
+    assert app.reply.said.cget("text_color") == app.look.palette.text
+    assert app.reply.did.cget("text") == "नीचे आदेश लिखें या बोलने के लिए बटन दबाएँ।"
+    assert app.reply.did.cget("text_color") == app.look.palette.muted
 
 
 def test_failed_save_is_shown_not_raised(make_app: Callable[..., Any],
