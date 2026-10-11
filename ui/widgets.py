@@ -185,7 +185,7 @@ class UiModel:
     """Everything the window shows. Changed only by :meth:`apply` and the app."""
 
     state: TurnState = TurnState.IDLE
-    detail_kind: str = ""  # "" | "status" | "error" | "stopped"
+    detail_kind: str = ""  # "" | "status" | "error" | "notice" | "stopped"
     detail: str = ""
     language: str = ""
     health: dict[str, bool | None] = field(default_factory=lambda: dict.fromkeys(HEALTH_MODULES))
@@ -229,7 +229,7 @@ class UiModel:
             if event.text:
                 self.finals.append(event.text)
             self.said, self.did, self.did_status = "", "", ""
-            if self.detail_kind in ("error", "stopped"):
+            if self.detail_kind in ("error", "notice", "stopped"):
                 self.detail_kind, self.detail = "", ""
             if event.language:
                 self.language = event.language
@@ -248,7 +248,11 @@ class UiModel:
             return frozenset({STATUS})
         if isinstance(event, ErrorRaised):
             prefix = f"{event.module}: " if event.module else ""
-            self.detail_kind, self.detail = "error", prefix + event.message
+            unavailable_stt = (
+                event.module == "stt" and "not available here" in event.message.casefold()
+            )
+            self.detail_kind = "notice" if unavailable_stt else "error"
+            self.detail = prefix + event.message
             return frozenset({STATUS})
         if isinstance(event, Interrupt):
             self.detail_kind, self.detail = "stopped", event.reason
@@ -508,11 +512,22 @@ class StatusBar(Section):
     def render(self, model: UiModel) -> None:
         """Draw the state, detail line, language and health dots."""
         look, pal = self.look, self.look.palette
+        state_colours = {
+            TurnState.IDLE: pal.text,
+            TurnState.LISTENING: pal.accent,
+            TurnState.THINKING: pal.accent,
+            TurnState.CHECKING: pal.warn,
+            TurnState.AWAITING_YES: pal.warn,
+            TurnState.ACTING: pal.accent,
+            TurnState.SPEAKING: pal.ok,
+        }
         awaiting = model.state == TurnState.AWAITING_YES
         self.state_label.configure(text=state_text(model.state, look.lang),
-                                   text_color=pal.warn if awaiting else pal.text)
+                                   text_color=state_colours.get(model.state, pal.text))
         if model.detail_kind == "error":
             text, colour = look.t("problem", message=model.detail), pal.bad
+        elif model.detail_kind == "notice":
+            text, colour = look.t("speech_unavailable"), pal.muted
         elif awaiting:
             text, colour = look.t("yes_no_hint"), pal.warn
         elif model.detail_kind == "stopped":
@@ -535,17 +550,21 @@ class TranscriptView(Section):
 
     def __init__(self, master: Any, look: Look) -> None:
         super().__init__(master, look)
-        heading(self, look, "you_said").grid(row=0, column=0, padx=16, pady=(8, 0), sticky="w")
+        pal = look.palette
+        heading(self, look, "you_said").grid(row=0, column=0, padx=16, pady=(12, 4), sticky="w")
         self.box = make_textbox(self, look, height=90)
-        self.box.grid(row=1, column=0, padx=10, pady=(4, 10), sticky="nsew")
+        self.box.configure(border_color=pal.track, corner_radius=8)
+        self.box.grid(row=1, column=0, padx=12, pady=(2, 12), sticky="nsew")
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
 
     def render(self, model: UiModel) -> None:
-        """Draw the last final sentences and the current partial text."""
+        """Draw finalized speech, partial speech, or a welcome hint."""
         lines = [(text + "\n", "final") for text in model.finals]
         if model.partial:
             lines.append((model.partial, "partial"))
+        if not lines:
+            lines.append((self.look.t("transcript_empty"), "muted"))
         write_lines(self.box, lines, end=True)
 
     def text(self) -> str:
@@ -559,12 +578,12 @@ class ReplyPanel(Section):
     def __init__(self, master: Any, look: Look) -> None:
         super().__init__(master, look)
         pal = look.palette
-        heading(self, look, "assistant_said").grid(row=0, column=0, padx=16, pady=(8, 0),
+        heading(self, look, "assistant_said").grid(row=0, column=0, padx=16, pady=(12, 4),
                                                    sticky="w")
         self.said = ctk.CTkLabel(self, text="", font=look.big, text_color=pal.text,
                                  anchor="w", justify="left", wraplength=600)
-        self.said.grid(row=1, column=0, padx=16, sticky="ew")
-        heading(self, look, "assistant_did").grid(row=2, column=0, padx=16, pady=(8, 0),
+        self.said.grid(row=1, column=0, padx=16, pady=(2, 8), sticky="ew")
+        heading(self, look, "assistant_did").grid(row=2, column=0, padx=16, pady=(8, 4),
                                                   sticky="w")
         self.did = ctk.CTkLabel(self, text="", font=look.base, text_color=pal.text,
                                 anchor="w", justify="left", wraplength=600)
@@ -580,14 +599,17 @@ class ReplyPanel(Section):
     def render(self, model: UiModel) -> None:
         """Draw the spoken reply and the action outcome."""
         pal = self.look.palette
-        self.said.configure(text=model.said or "—")
+        if model.said:
+            self.said.configure(text=model.said, text_color=pal.text)
+        else:
+            self.said.configure(text=self.look.t("welcome_message"), text_color=pal.text)
         if model.did:
             mark = STATUS_MARKS.get(model.did_status, "")
             word = status_word(model.did_status, self.look.lang) if model.did_status else ""
             text = f"{mark} {model.did}" + (f" ({word})" if word else "")
             self.did.configure(text=text.strip(), text_color=status_colour(pal, model.did_status))
         else:
-            self.did.configure(text=self.look.t("nothing_yet"), text_color=pal.muted)
+            self.did.configure(text=self.look.t("welcome_hint"), text_color=pal.muted)
 
 
 class SpeedReadout(Section):
@@ -635,7 +657,7 @@ class ActivityLog(Section):
             (format_activity(o, lang) + "\n", "ok" if o.ok else "bad")
             for o in reversed(model.activity)
         ]
-        write_lines(self.box, rows or [(self.look.t("no_activity"), "muted")])
+        write_lines(self.box, rows or [(self.look.t("activity_empty"), "muted")])
 
     def text(self) -> str:
         """Everything shown (used by tests)."""

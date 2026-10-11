@@ -174,6 +174,11 @@ def test_status_health_language_and_errors() -> None:
     assert model.detail == "audio: mic busy"
     model.apply(FinalTranscript("hello"))
     assert model.detail_kind == ""  # a new turn clears the old error
+    model.apply(ErrorRaised("Push-to-talk needs speech recognition (not available here)", "stt"))
+    assert model.detail_kind == "notice"
+    assert model.detail == "stt: Push-to-talk needs speech recognition (not available here)"
+    model.apply(FinalTranscript("hello again"))
+    assert model.detail_kind == ""
     model.apply(PartialTranscript("half"))
     model.apply(Interrupt("user"))
     assert model.detail_kind == "stopped" and model.partial == ""

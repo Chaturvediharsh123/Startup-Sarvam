@@ -22,7 +22,7 @@ from ui.theme import (
 from ui.widgets import HEALTH_MODULES, STATUS_MARKS
 
 DEVANAGARI = re.compile("[ऀ-ॿ]")
-HEX = re.compile(r"^#[0-9a-f]{6}$")
+HEX = re.compile(r"^#[0-9a-f]{6}$", re.IGNORECASE)
 
 
 def test_every_label_has_english_and_hindi() -> None:
@@ -92,7 +92,7 @@ def test_high_contrast_and_light_palettes() -> None:
     assert hc.final == "#ffffff"
     assert hc.focus_width > palette("dark").focus_width
     assert palette("light").final == "#000000"  # "final text in black"
-    assert palette("dark").final == "#ffffff"
+    assert palette("dark").final == "#F3F6FC"
     assert palette("nonsense").name == "dark"
     assert palette(None).name == "dark"
 

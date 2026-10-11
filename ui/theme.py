@@ -60,11 +60,11 @@ class Palette:
 
 PALETTES: dict[str, Palette] = {
     "dark": Palette(
-        name="dark", appearance="dark", bg="#1e1f22", panel="#2b2d31", text="#ffffff",
-        muted="#a0a0a0", heading="#e8e8e8", accent="#1f6aa5", accent_hover="#2a80c8",
-        accent_text="#ffffff", danger="#b3261e", danger_hover="#d63a30", danger_text="#ffffff",
-        ok="#3ddc84", bad="#ff6b6b", unknown="#8a8a8a", warn="#ffb74d", focus="#4fc3f7",
-        focus_width=3, border_width=1, entry_bg="#18191b", track="#4a4d52",
+        name="dark", appearance="dark", bg="#0B1020", panel="#141C2F", text="#F3F6FC",
+        muted="#A4B0C5", heading="#FFFFFF", accent="#38BDF8", accent_hover="#0EA5E9",
+        accent_text="#07111F", danger="#DC4545", danger_hover="#B92F3A", danger_text="#FFFFFF",
+        ok="#34D399", bad="#FB7185", unknown="#718096", warn="#FBBF24", focus="#67E8F9",
+        focus_width=3, border_width=1, entry_bg="#0F172A", track="#334155",
     ),
     "light": Palette(
         name="light", appearance="light", bg="#f2f2f2", panel="#ffffff", text="#000000",
