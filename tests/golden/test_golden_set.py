@@ -22,13 +22,14 @@ from tools.golden_eval import (
     GoldenItem,
     evaluate,
     filter_items,
+    is_question,
     load_items,
     match_args,
     score,
 )
 
 REQUIRED_FIELDS = {"id", "lang", "text", "expect_tool", "expect_args", "tags"}
-OPTIONAL_FIELDS = {"history"}
+OPTIONAL_FIELDS = {"history", "expect_clarify"}
 MIN_PER_LANGUAGE = {
     "hi": 30, "hinglish": 30, "en": 30, "ta": 15, "te": 15, "bn": 3, "kn": 3, "mr": 3,
 }
@@ -133,6 +134,21 @@ def test_tools_needing_args_have_them() -> None:
             assert item.expect_args, f"{item.id}: {item.expect_tool} needs expect_args"
 
 
+def test_clarify_items() -> None:
+    clarify = [i for i in ITEMS if i.expect_clarify]
+    assert all(i.expect_tool is None and not i.expect_args for i in clarify)
+    assert all("clarify" in i.tags for i in clarify)
+    assert all(i.expect_clarify for i in ITEMS if "clarify" in i.tags)
+    for lang in ("hi", "hinglish", "en"):
+        assert sum(i.lang == lang for i in clarify) >= 5, lang
+
+
+def test_clarify_field_is_bool(raw_items: list[dict[str, Any]]) -> None:
+    for raw in raw_items:
+        if "expect_clarify" in raw:
+            assert isinstance(raw["expect_clarify"], bool), raw["id"]
+
+
 def test_memory_followups_present() -> None:
     followups = [i for i in ITEMS if i.history]
     assert len(followups) >= 5
@@ -173,6 +189,20 @@ def test_score() -> None:
     qa = GoldenItem("y", "en", "Hi", None)
     assert score(qa, None)[0]
     assert not score(qa, _Call("current_time"))[0]
+
+
+def test_score_clarify() -> None:
+    item = GoldenItem("z", "hinglish", "Volume set karo", None, expect_clarify=True)
+    assert score(item, None, "Kitna volume rakhun?")[0]
+    assert score(item, None, "वॉल्यूम कितना करूँ?")[0]
+    ok, reason = score(item, None, "Volume set kar diya.")
+    assert not ok and "clarifying question" in reason
+    assert not score(item, _Call("set_volume", {"level": 50}), "Kitna?")[0]
+
+
+def test_is_question() -> None:
+    assert is_question("Kaunsa app kholun? Naam boliye.")
+    assert not is_question("Chrome khol raha hoon.")
 
 
 class _StubBrain:
