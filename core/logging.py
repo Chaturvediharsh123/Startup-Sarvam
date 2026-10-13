@@ -22,14 +22,15 @@ current_turn: contextvars.ContextVar[str] = contextvars.ContextVar("current_turn
 
 _SECRET = re.compile(
     r"(sk_[A-Za-z0-9_\-]{6})[A-Za-z0-9_\-]+"
-    r"|(api-subscription-key['\"]?\s*[:=]\s*['\"]?)[^'\",\s}]+",
+    r"|(api-subscription-key['\"]?\s*[:=]\s*['\"]?)[^'\",\s}]+"
+    r"|((?:token|bearer)\s+)[A-Za-z0-9_.\-]{8,}",
     re.IGNORECASE,
 )
 
 
 def mask_secrets(text: str) -> str:
-    """Hide Sarvam API keys and auth headers in log text."""
-    return _SECRET.sub(lambda m: (m.group(1) or m.group(2)) + "***", text)
+    """Hide API keys and auth headers (Sarvam, Deepgram ``Token``, Cartesia ``Bearer``)."""
+    return _SECRET.sub(lambda m: (m.group(1) or m.group(2) or m.group(3)) + "***", text)
 
 
 class TurnContextFilter(logging.Filter):

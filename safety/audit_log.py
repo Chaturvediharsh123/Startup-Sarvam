@@ -54,8 +54,9 @@ class AuditLog:
 
     @classmethod
     def from_settings(cls, settings: Settings) -> AuditLog:
-        """``<log_dir>/audit.jsonl``; the API key is always redacted."""
-        return cls(settings.log_dir / AUDIT_FILE, secrets=(settings.sarvam_api_key,))
+        """``<log_dir>/audit.jsonl``; the API keys are always redacted."""
+        secrets = (settings.sarvam_api_key, settings.deepgram_api_key, settings.cartesia_api_key)
+        return cls(settings.log_dir / AUDIT_FILE, secrets=secrets)
 
     # -- bus subscriber --------------------------------------------------------------
 

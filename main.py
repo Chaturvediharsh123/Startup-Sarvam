@@ -8,6 +8,7 @@ Usage::
     python main.py --text     # type commands instead of speaking (terminal)
     python main.py --mock     # no Sarvam key needed: keyword "LLM", typed input, window
     python main.py --mock --text   # same, in the terminal
+    python main.py --mock-brain    # real mic + Deepgram + Cartesia, keyword "LLM" (no LLM key)
 
 ``main.py`` is the only place that knows the concrete modules. Everything else talks
 through ``core.events`` on the :class:`~core.bus.EventBus` and ``core.interfaces``.
@@ -33,7 +34,14 @@ from brain.fake import FakeLLM
 from brain.llm_client import ChatModel, SarvamLLM
 from brain.memory import Memory
 from core.bus import EventBus
-from core.config import ConfigError, Settings, get_settings, load_settings, save_env_values
+from core.config import (
+    ConfigError,
+    Settings,
+    check_speech_keys,
+    get_settings,
+    load_settings,
+    save_env_values,
+)
 from core.events import (
     ActionResult,
     BrainResult,
@@ -55,8 +63,11 @@ from safety.guard import SafetyGuard
 from safety.kill_switch import KillSwitch
 from sarvam.client import SarvamClient
 from stt.batch_client import RestSTT
+from stt.deepgram_batch import DeepgramBatchSTT
+from stt.deepgram_realtime import DeepgramRealtimeSTT
 from stt.realtime_client import RealtimeSTT
 from stt.wake_word import strip_wake_word
+from tts.cartesia_client import CartesiaTTS
 from tts.fake import MockTTS, SilentTTS
 from tts.stream_client import SarvamTTS
 
@@ -92,6 +103,28 @@ class App:
                 logger.exception("Error while shutting down")
 
 
+def build_tts(settings: Settings, client: SarvamClient) -> Any:
+    """The text-to-speech client for ``settings.tts_provider`` (ADR 0009)."""
+    if settings.tts_provider == "cartesia":
+        return CartesiaTTS(
+            settings.cartesia_api_key, settings.cartesia_voice_id,
+            model=settings.cartesia_model, sample_rate=settings.tts_sample_rate,
+            speed=min(max(settings.tts_pace, 0.6), 1.5),
+            default_language=settings.default_language.split("-")[0],
+        )
+    return SarvamTTS(client, settings)
+
+
+def build_batch_stt(settings: Settings, client: SarvamClient) -> Any:
+    """The push-to-talk speech-to-text client for ``settings.stt_provider``."""
+    if settings.stt_provider == "deepgram":
+        return DeepgramBatchSTT(
+            settings.deepgram_api_key, language_hint=settings.language_hint,
+            model=settings.deepgram_model,
+        )
+    return RestSTT(client, settings)
+
+
 class _NoLiveSTT:
     """Mock mode has no speech recognition; live mode reports that and stops."""
 
@@ -119,6 +152,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--mock", action="store_true",
         help="offline test mode: keyword rules instead of Sarvam, typed input, no API key",
     )
+    parser.add_argument(
+        "--mock-brain", action="store_true",
+        help="real speech (Deepgram, Cartesia) with the keyword brain; no LLM key needed",
+    )
     parser.add_argument("--no-kill-switch", action="store_true",
                         help="turn off the mouse-in-corner emergency stop (tests only)")
     return parser.parse_args(argv)
@@ -129,6 +166,7 @@ def build_app(
     *,
     mock: bool = False,
     text: bool = False,
+    mock_brain: bool = False,
     kill_switch: bool = True,
     bus: EventBus | None = None,
 ) -> App:
@@ -137,6 +175,8 @@ def build_app(
     Args:
         mock: keyword-rule LLM and offline voice; nothing calls Sarvam.
         text: terminal typing mode; replies are printed, no sound device is opened.
+        mock_brain: keyword-rule LLM with the real speech clients (tests speech
+            without an LLM key).
         kill_switch: watch for the mouse in a screen corner (emergency stop).
     """
     bus = bus or EventBus()
@@ -153,7 +193,9 @@ def build_app(
     guard.start()
     closers.append(guard.stop)
 
-    llm: ChatModel = FakeLLM(memory) if mock else SarvamLLM.from_settings(client, settings)
+    llm: ChatModel = (
+        FakeLLM(memory) if mock or mock_brain else SarvamLLM.from_settings(client, settings)
+    )
     brain = SarvamBrain(memory, llm, settings, runner.tool_schemas())
     brain.start()
     closers.append(brain.stop)
@@ -192,7 +234,9 @@ def build_app(
         tts = MockTTS(settings, output=lambda _text: None)
         player = AudioPlayer(settings.tts_sample_rate, mute, stream_factory=speaker_stream)
     else:
-        tts = SarvamTTS(client, settings)
+        tts = build_tts(settings, client)
+        if hasattr(tts, "close"):
+            closers.append(tts.close)
         # With barge-in on, the mic stays open while speaking (use headphones).
         player = AudioPlayer(settings.tts_sample_rate, None if settings.barge_in else mute,
                              stream_factory=speaker_stream)
@@ -201,7 +245,16 @@ def build_app(
         """A live STT client wired to the orchestrator callbacks."""
         if mock:
             return _NoLiveSTT(on_event)
+        if settings.stt_provider == "deepgram":
+            return DeepgramRealtimeSTT(
+                settings.deepgram_api_key, settings, on_partial, on_final, on_event,
+                model=settings.deepgram_model, language=settings.deepgram_language,
+            )
         return RealtimeSTT(client, settings, on_partial, on_final, on_event)
+
+    batch_stt = None if mock or text else build_batch_stt(settings, client)
+    if batch_stt is not None and hasattr(batch_stt, "close"):
+        closers.append(batch_stt.close)
 
     switch: KillSwitch | None = None
 
@@ -214,7 +267,7 @@ def build_app(
 
     orchestrator = Orchestrator(
         settings, bus, brain, guard, runner, tts, player, mic, stt_factory,
-        batch_stt=None if mock else RestSTT(client, settings),
+        batch_stt=batch_stt,
         wake_filter=strip_wake_word,
         modules={"audio": mic, "brain": brain, "actions": runner, "safety": guard,
                  "tts": tts},
@@ -368,21 +421,27 @@ def main(argv: list[str] | None = None) -> int:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
     try:
-        settings = load_settings(require_key=False) if args.mock else get_settings()
+        no_llm_key = args.mock or args.mock_brain
+        settings = load_settings(require_key=False) if no_llm_key else get_settings()
+        if not (args.mock or args.text):
+            check_speech_keys(settings)
     except ConfigError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 2
     level = logging.DEBUG if args.debug else logging.INFO
     terminal = args.text or args.no_ui
     setup_logging(settings.log_dir, level, console=args.debug or not terminal)
-    logger.info("Starting (LLM %s, STT %s, mock=%s)", settings.llm_model,
-                settings.stt_realtime_model, args.mock)
-    app = build_app(settings, mock=args.mock, text=args.text,
+    logger.info("Starting (LLM %s, STT %s, TTS %s, mock=%s)", settings.llm_model,
+                settings.stt_provider, settings.tts_provider, args.mock)
+    app = build_app(settings, mock=args.mock, text=args.text, mock_brain=args.mock_brain,
                     kill_switch=not args.no_kill_switch)
     remove_hotkeys: Callable[[], None] = lambda: None  # noqa: E731
     try:
         if args.mock:
             print("MOCK MODE: no Sarvam calls; replies come from keyword rules.")
+        elif args.mock_brain:
+            print("MOCK BRAIN: real speech, keyword rules instead of the LLM. "
+                  "PC actions are real (safety checks still apply).")
         if args.text:
             run_text_mode(app)
         else:
