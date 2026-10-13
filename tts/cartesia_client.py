@@ -6,6 +6,14 @@ streams while audio is generated, so chunks are played as they arrive. Like
 sentences, and downloaded by a background thread into a :class:`SpeechStream`, so
 sentence N+1 is generated while sentence N plays and Interrupt stops both at once.
 
+Latency (live tests: Cartesia sometimes waits 2.4-4 s before answering):
+
+* **cache:** short sentences (fixed replies such as "Notepad khul gaya") are kept in
+  memory after the first time and replayed instantly (LRU, ``cache_entries``);
+* **hedged request:** if no response has started after ``hedge_after_s``, the same
+  request is sent again in parallel and whichever answers first is played; the
+  other is closed. A failed request is retried once the same way.
+
 API: https://docs.cartesia.ai/api-reference/tts/bytes (ADR 0009).
 The API key and the spoken text are never logged.
 """
@@ -16,7 +24,9 @@ import logging
 import threading
 import time
 import weakref
-from collections.abc import Callable
+from collections import OrderedDict
+from collections.abc import Iterator
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from typing import Any
 
 import httpx
@@ -35,6 +45,10 @@ API_VERSION = "2026-08-14"
 DEFAULT_MODEL = "sonic-3.6"
 SAMPLE_RATES = frozenset({8000, 16000, 22050, 24000, 44100, 48000})
 RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+HEDGE_AFTER_S = 1.2
+CACHE_ENTRIES = 64
+CACHE_MAX_CHARS = 80
+_CHUNK_S = 0.1  # cached audio is replayed in ~100 ms chunks
 
 
 class CartesiaError(RuntimeError):
@@ -66,6 +80,10 @@ class CartesiaTTS:
         speed: 0.6 .. 1.5 (1.0 = normal).
         default_language: Cartesia code used when the reply has no language.
         clean: run :func:`tts.text_cleaner.clean_for_speech` on every reply.
+        hedge_after_s: send a second request if the first has not answered by then
+            (0 = never). The abandoned request may still be billed.
+        cache_entries: how many short sentences to keep (0 = no cache).
+        cache_max_chars: only sentences up to this length are cached.
     """
 
     def __init__(
@@ -81,8 +99,10 @@ class CartesiaTTS:
         timeout_s: float = 15.0,
         prefetch_chunks: int = PREFETCH_CHUNKS,
         clean: bool = True,
+        hedge_after_s: float = HEDGE_AFTER_S,
+        cache_entries: int = CACHE_ENTRIES,
+        cache_max_chars: int = CACHE_MAX_CHARS,
         transport: httpx.BaseTransport | None = None,
-        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         if not api_key.strip():
             raise ValueError("CARTESIA_API_KEY is empty")
@@ -100,8 +120,13 @@ class CartesiaTTS:
         self.default_language = default_language
         self.prefetch_chunks = prefetch_chunks
         self.clean = clean
+        self.hedge_after_s = hedge_after_s
+        self.cache_entries = cache_entries
+        self.cache_max_chars = cache_max_chars
         self.last_error = ""
-        self._sleep = sleep
+        self._cache: OrderedDict[tuple[Any, ...], bytes] = OrderedDict()
+        self._cache_lock = threading.Lock()
+        self._pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="cartesia")
         self._http = httpx.Client(
             base_url=BASE_URL,
             headers={
@@ -166,60 +191,152 @@ class CartesiaTTS:
             raise
         self.last_error = ""
 
-    def _speak_sentence(
-        self, job: SpeechStream, sentence: str, language: str | None, attempts: int = 2
-    ) -> bool:
-        """Stream one sentence into ``job``; False once the job was cancelled.
+    def _speak_sentence(self, job: SpeechStream, sentence: str, language: str | None) -> bool:
+        """Speak one sentence into ``job``; False once the job was cancelled.
 
-        Retries once when the request fails before any audio arrived. A stream that
-        breaks mid-sentence is logged and skipped, so a half-spoken sentence is not
-        repeated.
+        Plays from the cache when possible. A stream that breaks mid-sentence is
+        logged and skipped, so a half-spoken sentence is not repeated.
         """
         body = self.payload(sentence, language)
-        for attempt in range(1, attempts + 1):
-            produced = False
-            start = time.perf_counter()
-            first_ms: float | None = None
-            size = 0
-            try:
-                with self._http.stream("POST", BYTES_PATH, json=body) as response:
-                    headers_ms = (time.perf_counter() - start) * 1000
-                    if response.status_code != 200:
-                        response.read()
-                        raise CartesiaError(_describe(response), response.status_code)
-                    job.add_cancel_hook(response.close)
-                    try:
-                        for pcm in _pcm_chunks(response.iter_bytes()):
-                            if first_ms is None:
-                                first_ms = (time.perf_counter() - start) * 1000
-                            produced = True
-                            size += len(pcm)
-                            if not job.put(pcm):
-                                return False
-                    finally:
-                        job.remove_cancel_hook(response.close)
-                logger.info(
-                    "Cartesia sentence (%d chars, %s): headers %.0f ms, first audio %s ms, "
-                    "%.1f s audio, %.0f ms total",
-                    len(sentence), body["language"], headers_ms,
-                    f"{first_ms:.0f}" if first_ms is not None else "-",
-                    size / 2 / self.sample_rate, (time.perf_counter() - start) * 1000,
-                )
-                return not job.cancelled
-            except (CartesiaError, httpx.HTTPError) as exc:
-                if job.cancelled:
+        key = self._cache_key(body)
+        cached = self._cache_get(key)
+        if cached is not None:
+            logger.info("Cartesia sentence (%d chars, %s): from cache", len(sentence),
+                        body["language"])
+            return all(job.put(chunk) for chunk in self._chunks(cached))
+        start = time.perf_counter()
+        response = self._open(body, job)
+        if response is None:
+            return False
+        headers_ms = (time.perf_counter() - start) * 1000
+        first_ms: float | None = None
+        audio: list[bytes] = []
+        job.add_cancel_hook(response.close)
+        try:
+            for pcm in _pcm_chunks(response.iter_bytes()):
+                if first_ms is None:
+                    first_ms = (time.perf_counter() - start) * 1000
+                audio.append(pcm)
+                if not job.put(pcm):
                     return False
-                error = exc if isinstance(exc, CartesiaError) else CartesiaError(
-                    f"network error: {type(exc).__name__}"
+        except httpx.HTTPError as exc:
+            if job.cancelled:
+                return False
+            if audio:
+                logger.error("TTS stream broke mid-sentence: %s", type(exc).__name__)
+                return True
+            raise CartesiaError(f"network error: {type(exc).__name__}") from None
+        finally:
+            job.remove_cancel_hook(response.close)
+            response.close()
+        if job.cancelled:
+            return False
+        if key is not None and audio:
+            self._cache_put(key, b"".join(audio))
+        logger.info(
+            "Cartesia sentence (%d chars, %s): headers %.0f ms, first audio %s ms, "
+            "%.1f s audio, %.0f ms total",
+            len(sentence), body["language"], headers_ms,
+            f"{first_ms:.0f}" if first_ms is not None else "-",
+            sum(map(len, audio)) / 2 / self.sample_rate, (time.perf_counter() - start) * 1000,
+        )
+        return True
+
+    # -- requests ----------------------------------------------------------------
+    def _request(self, body: dict[str, Any]) -> httpx.Response:
+        """Send one request and wait for its headers; raises :class:`CartesiaError`."""
+        try:
+            response = self._http.send(
+                self._http.build_request("POST", BYTES_PATH, json=body), stream=True
+            )
+        except httpx.HTTPError as exc:
+            raise CartesiaError(f"network error: {type(exc).__name__}") from None
+        if response.status_code != 200:
+            try:
+                response.read()
+                raise CartesiaError(_describe(response), response.status_code)
+            finally:
+                response.close()
+        return response
+
+    def _open(self, body: dict[str, Any], job: SpeechStream) -> httpx.Response | None:
+        """An answered response for ``body``, sending a second request if needed.
+
+        A second request is sent when the first has not answered after
+        ``hedge_after_s``, or failed with a retryable error. Whichever answers first
+        wins; the other is closed. Returns ``None`` if ``job`` was cancelled.
+        """
+        first = self._pool.submit(self._request, body)
+        pending: list[Future[httpx.Response]] = [first]
+        sent = 1
+        started = time.perf_counter()
+        last_error: CartesiaError | None = None
+        while True:
+            if job.cancelled:
+                _discard(pending)
+                return None
+            done, _ = wait(pending, timeout=0.05, return_when=FIRST_COMPLETED)
+            for future in done:
+                pending.remove(future)
+                error = future.exception()
+                if error is None:
+                    _discard(pending)
+                    if sent > 1:
+                        logger.info("Cartesia: the %s request answered first",
+                                    "first" if future is first else "second")
+                    return future.result()
+                last_error = error if isinstance(error, CartesiaError) else CartesiaError(
+                    f"unexpected error: {type(error).__name__}"
                 )
-                if produced:
-                    logger.error("TTS stream broke mid-sentence: %s", error)
-                    return True
-                if not error.retryable or attempt == attempts:
-                    raise error from None
-                logger.warning("Cartesia request failed (%s), retrying", error)
-                self._sleep(0.3 * attempt)
-        return False
+                if not last_error.retryable:
+                    _discard(pending)
+                    raise last_error
+            if sent == 1 and (
+                last_error is not None
+                or (self.hedge_after_s > 0
+                    and time.perf_counter() - started >= self.hedge_after_s)
+            ):
+                if last_error is not None:
+                    logger.warning("Cartesia request failed (%s), retrying", last_error)
+                else:
+                    logger.info("Cartesia slow (no answer after %.1f s), sending a second "
+                                "request", self.hedge_after_s)
+                pending.append(self._pool.submit(self._request, body))
+                sent = 2
+            if not pending:
+                assert last_error is not None
+                raise last_error
+
+    # -- cache -------------------------------------------------------------------
+    def _cache_key(self, body: dict[str, Any]) -> tuple[Any, ...] | None:
+        """Cache key for a short sentence, else ``None`` (not cached)."""
+        text = body["transcript"]
+        if self.cache_entries <= 0 or len(text) > self.cache_max_chars:
+            return None
+        return (text, body["language"], body["voice"]["id"], self.model, self.sample_rate,
+                self.speed)
+
+    def _cache_get(self, key: tuple[Any, ...] | None) -> bytes | None:
+        if key is None:
+            return None
+        with self._cache_lock:
+            audio = self._cache.get(key)
+            if audio is not None:
+                self._cache.move_to_end(key)
+            return audio
+
+    def _cache_put(self, key: tuple[Any, ...], audio: bytes) -> None:
+        with self._cache_lock:
+            self._cache[key] = audio
+            self._cache.move_to_end(key)
+            while len(self._cache) > self.cache_entries:
+                self._cache.popitem(last=False)
+
+    def _chunks(self, audio: bytes) -> Iterator[bytes]:
+        """Split cached PCM into ~100 ms chunks so playback can be interrupted."""
+        step = int(self.sample_rate * _CHUNK_S) * 2
+        for offset in range(0, len(audio), step):
+            yield audio[offset : offset + step]
 
     def health(self) -> Health:
         """Red after the last reply failed."""
@@ -230,7 +347,19 @@ class CartesiaTTS:
     def close(self) -> None:
         """Cancel streams in progress and close the HTTP connection pool."""
         self.cancel()
+        self._pool.shutdown(wait=False, cancel_futures=True)
         self._http.close()
+
+
+def _discard(futures: list[Future[httpx.Response]]) -> None:
+    """Close the responses of requests nobody is waiting for any more."""
+    for future in futures:
+        future.add_done_callback(_close_result)
+
+
+def _close_result(future: Future[httpx.Response]) -> None:
+    if not future.cancelled() and future.exception() is None:
+        future.result().close()
 
 
 def _describe(response: httpx.Response) -> str:
