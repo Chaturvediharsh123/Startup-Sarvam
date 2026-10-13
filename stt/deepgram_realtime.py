@@ -30,7 +30,7 @@ import json
 import logging
 import threading
 import time
-from collections import Counter
+from collections import Counter, deque
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlencode
@@ -72,7 +72,9 @@ class DeepgramRealtimeSTT:
         on_final: called with ``(text, language_code)`` when the user pauses.
         on_event: called with ``"connected"``, ``"disconnected"``, ``"fallback"``,
             ``"speech_start"``, ``"speech_end"``, ``"local_end_of_speech"`` or
-            ``"error:<message>"``.
+            ``"error:<message>"``. The end-of-speech events carry the time the last
+            word ended as ``"speech_end@<perf_counter>"`` when Deepgram's word timings
+            allow it, because they are only known once the final transcript arrives.
         model: Deepgram model.
         language: Deepgram language: ``hi`` (default) or ``multi`` (code-switching).
         endpointing_ms: pause that ends a sentence; defaults to ``settings.vad_silence_ms``.
@@ -125,6 +127,9 @@ class DeepgramRealtimeSTT:
         self._pieces: list[str] = []
         self._languages: Counter[str] = Counter()
         self._local_final_at = 0.0
+        self._last_word_end: float | None = None  # stream seconds, current utterance
+        self._audio_sent_s = 0.0  # seconds of audio sent on this connection
+        self._timeline: deque[tuple[float, float]] = deque(maxlen=1200)  # (audio s, sent at)
 
     # -- connection --------------------------------------------------------------
     def url(self) -> str:
@@ -183,6 +188,8 @@ class DeepgramRealtimeSTT:
         self.last_error = ""
         self._silence.reset()
         self._reset_utterance()
+        self._audio_sent_s = 0.0  # Deepgram's word times restart on every connection
+        self._timeline.clear()
         self.on_event("connected")
 
     async def _session(self, read_audio: AudioReader, stop: threading.Event) -> None:
@@ -222,6 +229,7 @@ class DeepgramRealtimeSTT:
             now = time.monotonic()
             if chunk:
                 await ws.send(chunk)
+                self._mark_sent(len(chunk), time.perf_counter())
                 last_sent = now
                 text = self._silence.feed(chunk)
                 if text:
@@ -249,6 +257,34 @@ class DeepgramRealtimeSTT:
     def _reset_utterance(self) -> None:
         self._pieces = []
         self._languages = Counter()
+        self._last_word_end = None
+
+    # -- when did the user stop speaking? ----------------------------------------------
+    def _mark_sent(self, nbytes: int, at: float) -> None:
+        """Remember that the stream reached ``_audio_sent_s`` seconds at time ``at``."""
+        self._audio_sent_s += nbytes / 2 / self.settings.sample_rate
+        self._timeline.append((self._audio_sent_s, at))
+
+    def _wall_time(self, audio_s: float) -> float | None:
+        """``perf_counter`` time when stream position ``audio_s`` was sent (about when it
+        was spoken), from the chunk that contained it; ``None`` if unknown."""
+        for end_s, sent_at in self._timeline:
+            if end_s >= audio_s:
+                return sent_at - (end_s - audio_s)
+        return None
+
+    def _end_event(self, name: str) -> str:
+        """``name`` with ``@<time the last word ended>`` when that time is known."""
+        if self._last_word_end is None:
+            return name
+        at = self._wall_time(self._last_word_end)
+        return name if at is None else f"{name}@{at:.6f}"
+
+    def _note_word_times(self, alternative: dict[str, Any]) -> None:
+        for word in alternative.get("words") or []:
+            end = word.get("end") if isinstance(word, dict) else None
+            if isinstance(end, int | float) and not isinstance(end, bool):
+                self._last_word_end = max(self._last_word_end or 0.0, float(end))
 
     def _language(self, text: str) -> str | None:
         """The utterance's language.
@@ -280,9 +316,10 @@ class DeepgramRealtimeSTT:
         """Deepgram's end of speech is late: use the last partial as the final."""
         logger.info("Local silence timeout: using last partial as final")
         language = self._language(text)
+        event = self._end_event("local_end_of_speech")
         self._reset_utterance()
         self._local_final_at = time.monotonic()
-        self.on_event("local_end_of_speech")
+        self.on_event(event)
         self.on_final(text, language)
 
     def _late(self) -> bool:
@@ -300,7 +337,7 @@ class DeepgramRealtimeSTT:
                 self._reset_utterance()
                 return
             if self._pieces:
-                self.on_event("speech_end")
+                self.on_event(self._end_event("speech_end"))
                 self._deliver()
         elif kind == "SpeechStarted":
             self._local_final_at = 0.0
@@ -321,6 +358,8 @@ class DeepgramRealtimeSTT:
                 self._local_final_at = 0.0
                 self._reset_utterance()
             return
+        if text:
+            self._note_word_times(alternative)
         if message.get("is_final"):
             if text:
                 self._pieces.append(text)
@@ -333,7 +372,7 @@ class DeepgramRealtimeSTT:
                         break
             if message.get("speech_final"):
                 if self._pieces:  # Deepgram also sends empty finals after silence
-                    self.on_event("speech_end")
+                    self.on_event(self._end_event("speech_end"))
                 self._deliver()
                 return
             live = " ".join(self._pieces)

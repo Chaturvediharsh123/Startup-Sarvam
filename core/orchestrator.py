@@ -143,6 +143,24 @@ def _no_wake_filter(text: str, wake_word: str) -> str:
     return text.strip()
 
 
+MAX_SPEECH_END_AGE_S = 30.0
+
+
+def speech_end_time(stamp: str, now: float) -> float:
+    """The ``perf_counter`` time in a ``speech_end@<time>`` event, else ``now``.
+
+    A missing, unparsable, future or more than :data:`MAX_SPEECH_END_AGE_S` old time
+    is ignored, so a bad value can never distort the metrics.
+    """
+    try:
+        at = float(stamp)
+    except ValueError:
+        return now
+    if at != at or at > now or now - at > MAX_SPEECH_END_AGE_S:  # NaN, future, stale
+        return now
+    return at
+
+
 class Orchestrator:
     """Runs turns through the PDF state machine and publishes every step on the bus.
 
@@ -316,8 +334,12 @@ class Orchestrator:
         self.publish(PartialTranscript(text))
 
     def _on_stt_event(self, event: str) -> None:
-        if event in ("speech_end", "local_end_of_speech"):
-            self._speech_end_at = self._speech_end_at or time.perf_counter()
+        name, _, stamp = event.partition("@")
+        if name in ("speech_end", "local_end_of_speech"):
+            # "speech_end@<perf_counter>" says when the user really stopped speaking; an
+            # STT client that only learns it later (Deepgram) can report the past time.
+            at = speech_end_time(stamp, time.perf_counter())
+            self._speech_end_at = self._speech_end_at or at
         elif event == "speech_start":
             if self.settings.barge_in and self.player.is_speaking:
                 self.interrupt("barge-in")

@@ -417,3 +417,24 @@ def test_stt_fallback_reports_health_and_error(make) -> None:
 def test_health_reports_registered_modules(make) -> None:
     h = make(StubBrain(reply("ok")))
     assert [x.module for x in h.orch.health()] == ["brain"]
+
+
+def test_speech_end_time_parsing() -> None:
+    from core.orchestrator import speech_end_time
+
+    now = 1000.0
+    assert speech_end_time("999.25", now) == 999.25
+    for bad in ("", "abc", "nan", "1000.5", "900"):  # empty, junk, NaN, future, too old
+        assert speech_end_time(bad, now) == now
+
+
+def test_timestamped_speech_end_gives_real_stt_time(make) -> None:
+    spoke_at = time.perf_counter() - 0.6  # the user stopped speaking 0.6 s ago
+    h = make(StubBrain(reply("ji")),
+             script=[("event", f"speech_end@{spoke_at:.6f}"), ("final", ("time batao", "hi-IN"))])
+    assert h.orch.start_live()
+    h.wait(lambda: bool(h.of(Metrics)))
+    metrics = h.of(Metrics)[0]
+    assert metrics.stt_ms >= 550
+    assert metrics.total_ms >= metrics.stt_ms
+    h.orch.stop_live()
