@@ -25,7 +25,8 @@ tests (see "Live test results" below).
 
 - **STT:** Deepgram `nova-3`.
   - Push-to-talk (`stt/deepgram_batch.py`): `language=multi`.
-  - Live streaming (`stt/deepgram_realtime.py`): `language=hi`, `endpointing=500`. In
+  - Live streaming (`stt/deepgram_realtime.py`): `language=hi`, `endpointing=800` (500 cut
+    sentences at natural mid-sentence pauses in the full-loop test, #15). In
     this mode Deepgram tags no word languages, so the language is detected from the
     transcript with `language.detect.detect_language`.
 - **TTS:** Cartesia `sonic-3.6`, pinned to a dated snapshot in production.
