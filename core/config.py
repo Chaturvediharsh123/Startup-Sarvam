@@ -81,6 +81,8 @@ class Settings:
     deepgram_api_key: str = field(default="", repr=False)
     deepgram_model: str = "nova-3"
     deepgram_language: str = "hi"  # live streaming; push-to-talk always uses multi
+    deepgram_keyterms_enabled: bool = True  # app names from the allow-list as keyterms
+    deepgram_keyterms: tuple[str, ...] = ()  # extra terms, e.g. singer names
     cartesia_api_key: str = field(default="", repr=False)
     cartesia_voice_id: str = ""
     cartesia_model: str = "sonic-3.6"
@@ -198,6 +200,19 @@ def _as_choice(raw: Mapping[str, str], key: str, default: str, choices: tuple[st
     return value
 
 
+def _as_list(raw: Mapping[str, str], key: str) -> tuple[str, ...]:
+    """Read ``a, b c, d`` into ``("a", "b c", "d")``; ``none`` means an empty list."""
+    value = raw.get(key, "").strip()
+    if value.lower() == "none":
+        return ()
+    return tuple(part.strip() for part in value.split(",") if part.strip())
+
+
+def _keyterms_enabled(raw: Mapping[str, str]) -> bool:
+    """``DEEPGRAM_KEYTERMS=none`` turns keyterms off, including the app names."""
+    return raw.get("DEEPGRAM_KEYTERMS", "").strip().lower() != "none"
+
+
 def _read_raw(env_file: Path | None, settings_file: Path | None = None) -> dict[str, str]:
     """Merge settings.yaml, the .env file and real environment variables.
 
@@ -298,6 +313,8 @@ def load_settings(
         deepgram_model=raw.get("DEEPGRAM_MODEL", "").strip() or defaults.deepgram_model,
         deepgram_language=raw.get("DEEPGRAM_LANGUAGE", "").strip().lower()
         or defaults.deepgram_language,
+        deepgram_keyterms_enabled=_keyterms_enabled(raw),
+        deepgram_keyterms=_as_list(raw, "DEEPGRAM_KEYTERMS"),
         cartesia_api_key=raw.get("CARTESIA_API_KEY", "").strip(),
         cartesia_voice_id=raw.get("CARTESIA_VOICE_ID", "").strip(),
         cartesia_model=raw.get("CARTESIA_MODEL", "").strip() or defaults.cartesia_model,

@@ -31,7 +31,7 @@ import logging
 import threading
 import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 from urllib.parse import urlencode
 
@@ -41,6 +41,7 @@ from websockets.exceptions import ConnectionClosed, InvalidStatus, WebSocketExce
 from core.config import Settings
 from core.interfaces import Health
 from language.detect import detect_language, from_provider_code, normalise_code
+from stt.keyterms import clean_keyterms, keyterm_params
 from stt.vad import SILENCE_LEVEL, LocalSilenceDetector
 
 logger = logging.getLogger(__name__)
@@ -76,6 +77,7 @@ class DeepgramRealtimeSTT:
         model: Deepgram model.
         language: Deepgram language: ``hi`` (default) or ``multi`` (code-switching).
         endpointing_ms: pause that ends a sentence; defaults to ``settings.vad_silence_ms``.
+        keyterms: words to listen for harder, such as app names (see :mod:`stt.keyterms`).
         connect: WebSocket connect function (tests pass a fake).
 
     Attributes:
@@ -93,6 +95,7 @@ class DeepgramRealtimeSTT:
         model: str = DEFAULT_MODEL,
         language: str = "hi",
         endpointing_ms: int | None = None,
+        keyterms: Iterable[str] = (),
         connect: Callable[..., Any] = ws_connect,
     ) -> None:
         if not api_key.strip():
@@ -103,6 +106,7 @@ class DeepgramRealtimeSTT:
         self.on_final = on_final
         self.on_event = on_event or (lambda _e: None)
         self.model = model
+        self.keyterms = clean_keyterms(keyterms)
         self.language = language
         self.endpointing_ms = endpointing_ms or settings.vad_silence_ms
         self.language_hint = settings.language_hint
@@ -141,7 +145,7 @@ class DeepgramRealtimeSTT:
             "vad_events": "true",
             "punctuate": "true",
         }
-        return f"{WS_URL}?{urlencode(params)}"
+        return f"{WS_URL}?{urlencode([*params.items(), *keyterm_params(self.keyterms)])}"
 
     def run_blocking(self, read_audio: AudioReader, stop: threading.Event) -> None:
         """Run the client on a fresh event loop until ``stop`` is set (thread target)."""
