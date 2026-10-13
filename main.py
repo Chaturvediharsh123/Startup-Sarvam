@@ -65,6 +65,7 @@ from sarvam.client import SarvamClient
 from stt.batch_client import RestSTT
 from stt.deepgram_batch import DeepgramBatchSTT
 from stt.deepgram_realtime import DeepgramRealtimeSTT
+from stt.keyterms import clean_keyterms
 from stt.realtime_client import RealtimeSTT
 from stt.wake_word import strip_wake_word
 from tts.cartesia_client import CartesiaTTS
@@ -103,6 +104,27 @@ class App:
                 logger.exception("Error while shutting down")
 
 
+# Spelling Deepgram should use for app keys whose title-cased form is wrong.
+KEYTERM_NAMES = {"powerpoint": "PowerPoint", "file_manager": "File Explorer"}
+SERVICE_KEYTERMS = ("YouTube", "Google")
+
+
+def speech_keyterms(settings: Settings) -> list[str]:
+    """Words Deepgram should listen for harder: allow-listed app names, services and
+    ``DEEPGRAM_KEYTERMS``. Empty when ``DEEPGRAM_KEYTERMS=none``."""
+    if not settings.deepgram_keyterms_enabled:
+        return []
+    from safety.allowlist import Allowlist
+
+    try:
+        apps = Allowlist.load(settings.allowlist_path).apps
+    except Exception:  # noqa: BLE001 - keyterms are an extra; never block startup
+        logger.warning("Could not read app names for Deepgram keyterms", exc_info=True)
+        apps = {}
+    names = [KEYTERM_NAMES.get(key, key.replace("_", " ").title()) for key in apps]
+    return clean_keyterms([*names, *SERVICE_KEYTERMS, *settings.deepgram_keyterms])
+
+
 def build_tts(settings: Settings, client: SarvamClient) -> Any:
     """The text-to-speech client for ``settings.tts_provider`` (ADR 0009)."""
     if settings.tts_provider == "cartesia":
@@ -120,7 +142,7 @@ def build_batch_stt(settings: Settings, client: SarvamClient) -> Any:
     if settings.stt_provider == "deepgram":
         return DeepgramBatchSTT(
             settings.deepgram_api_key, language_hint=settings.language_hint,
-            model=settings.deepgram_model,
+            model=settings.deepgram_model, keyterms=speech_keyterms(settings),
         )
     return RestSTT(client, settings)
 
@@ -241,6 +263,8 @@ def build_app(
         player = AudioPlayer(settings.tts_sample_rate, None if settings.barge_in else mute,
                              stream_factory=speaker_stream)
 
+    keyterms = [] if mock else speech_keyterms(settings)
+
     def stt_factory(on_partial, on_final, on_event):  # type: ignore[no-untyped-def]
         """A live STT client wired to the orchestrator callbacks."""
         if mock:
@@ -249,6 +273,7 @@ def build_app(
             return DeepgramRealtimeSTT(
                 settings.deepgram_api_key, settings, on_partial, on_final, on_event,
                 model=settings.deepgram_model, language=settings.deepgram_language,
+                keyterms=keyterms,
             )
         return RealtimeSTT(client, settings, on_partial, on_final, on_event)
 

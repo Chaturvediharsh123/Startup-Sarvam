@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 import httpx
@@ -20,6 +20,7 @@ import httpx
 from core.interfaces import Health
 from language.detect import from_provider_code, normalise_code
 from stt.batch_client import pcm_to_wav
+from stt.keyterms import clean_keyterms, keyterm_params
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,9 @@ def parse_response(body: Any) -> tuple[str, str | None]:
 class DeepgramBatchSTT:
     """Transcribes one recording and detects its language (implements ``BatchSpeechToText``).
 
+    Args:
+        keyterms: words to listen for harder, such as app names (see :mod:`stt.keyterms`).
+
     Attributes:
         language_hint: our code (e.g. ``hi-IN``) reported when Deepgram detects no language.
     """
@@ -70,6 +74,7 @@ class DeepgramBatchSTT:
         api_key: str,
         language_hint: str = "",
         model: str = DEFAULT_MODEL,
+        keyterms: Iterable[str] = (),
         timeout_s: float = 10.0,
         transport: httpx.BaseTransport | None = None,
         sleep: Callable[[float], None] = time.sleep,
@@ -78,6 +83,7 @@ class DeepgramBatchSTT:
             raise ValueError("DEEPGRAM_API_KEY is empty")
         self.language_hint = language_hint
         self.model = model
+        self.keyterms = clean_keyterms(keyterms)
         self.last_error = ""
         self._sleep = sleep
         self._http = httpx.Client(
@@ -105,7 +111,8 @@ class DeepgramBatchSTT:
         return text, from_provider_code(language) or hint
 
     def _post(self, wav: bytes, attempts: int = 2) -> Any:
-        params = {"model": self.model, "language": "multi", "punctuate": "true"}
+        params = [("model", self.model), ("language", "multi"), ("punctuate", "true"),
+                  *keyterm_params(self.keyterms)]
         for attempt in range(1, attempts + 1):
             try:
                 response = self._http.post(

@@ -10,6 +10,8 @@ speech:                            # ADR 0009
   tts_provider: cartesia           # cartesia | sarvam
   deepgram_model: nova-3
   deepgram_language: hi            # live streaming: hi | multi | en (push-to-talk uses multi)
+  deepgram_keyterms: ""            # extra keyterms, comma-separated (app names are added
+                                   # from allowlist.yaml automatically); none = off
   cartesia_model: sonic-3.6        # pin a dated snapshot in production
   # cartesia_voice_id is set in .env (CARTESIA_VOICE_ID)
 
