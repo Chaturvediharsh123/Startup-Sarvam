@@ -24,6 +24,8 @@ UI_THEMES = ("dark", "light", "high_contrast")
 UI_LANGUAGES = ("en", "hi")
 
 REASONING_LEVELS = ("low", "medium", "high", "max", "none")
+STT_PROVIDERS = ("deepgram", "sarvam")
+TTS_PROVIDERS = ("cartesia", "sarvam")
 
 
 class ConfigError(RuntimeError):
@@ -46,7 +48,7 @@ class Settings:
     default_language: str = "hi-IN"
     sample_rate: int = 16000
     chunk_ms: int = 100
-    vad_silence_ms: int = 500
+    vad_silence_ms: int = 800
     mic_device: str = ""
     speaker_device: str = ""
     history_turns: int = 4
@@ -73,6 +75,15 @@ class Settings:
     ui_theme: str = "dark"
     ui_language: str = "en"
     allowlist_path: Path = ALLOWLIST_FILE
+    # -- speech providers (ADR 0009) -------------------------------------------
+    stt_provider: str = "deepgram"
+    tts_provider: str = "cartesia"
+    deepgram_api_key: str = field(default="", repr=False)
+    deepgram_model: str = "nova-3"
+    deepgram_language: str = "hi"  # live streaming; push-to-talk always uses multi
+    cartesia_api_key: str = field(default="", repr=False)
+    cartesia_voice_id: str = ""
+    cartesia_model: str = "sonic-3.6"
 
     def voice_for(self, language: str | None) -> str:
         """The TTS speaker for a language, falling back to :attr:`tts_speaker`."""
@@ -157,8 +168,8 @@ def _read_yaml(settings_file: Path | None) -> dict[str, str]:
         if not isinstance(values, dict):
             raise ConfigError(f"{settings_file.name}: section {section!r} must be a mapping")
         for key, value in values.items():
-            if str(key).lower() == "sarvam_api_key":
-                raise ConfigError("Put SARVAM_API_KEY in .env, never in settings.yaml")
+            if str(key).lower().endswith("_api_key"):
+                raise ConfigError(f"Put {str(key).upper()} in .env, never in settings.yaml")
             if isinstance(value, dict):
                 value = ",".join(f"{k}:{v}" for k, v in value.items())
             elif isinstance(value, bool):
@@ -255,7 +266,7 @@ def load_settings(
         default_language=raw.get("DEFAULT_LANGUAGE", "").strip() or defaults.default_language,
         sample_rate=sample_rate,
         chunk_ms=_as_int(raw, "CHUNK_MS", 100, 20, 500),
-        vad_silence_ms=_as_int(raw, "VAD_SILENCE_MS", 500, 100, 5000),
+        vad_silence_ms=_as_int(raw, "VAD_SILENCE_MS", 800, 100, 5000),
         mic_device=raw.get("MIC_DEVICE", "").strip(),
         speaker_device=raw.get("SPEAKER_DEVICE", "").strip(),
         history_turns=_as_int(raw, "HISTORY_TURNS", 4, 0, 100),
@@ -281,7 +292,48 @@ def load_settings(
         ui_theme=_as_choice(raw, "UI_THEME", "dark", UI_THEMES),
         ui_language=_as_choice(raw, "UI_LANGUAGE", "en", UI_LANGUAGES),
         allowlist_path=_resolve_path(raw.get("ALLOWLIST_PATH", "").strip(), ALLOWLIST_FILE),
+        stt_provider=_as_choice(raw, "STT_PROVIDER", "deepgram", STT_PROVIDERS),
+        tts_provider=_as_choice(raw, "TTS_PROVIDER", "cartesia", TTS_PROVIDERS),
+        deepgram_api_key=raw.get("DEEPGRAM_API_KEY", "").strip(),
+        deepgram_model=raw.get("DEEPGRAM_MODEL", "").strip() or defaults.deepgram_model,
+        deepgram_language=raw.get("DEEPGRAM_LANGUAGE", "").strip().lower()
+        or defaults.deepgram_language,
+        cartesia_api_key=raw.get("CARTESIA_API_KEY", "").strip(),
+        cartesia_voice_id=raw.get("CARTESIA_VOICE_ID", "").strip(),
+        cartesia_model=raw.get("CARTESIA_MODEL", "").strip() or defaults.cartesia_model,
     )
+
+
+CARTESIA_SAMPLE_RATES = (8000, 16000, 22050, 24000)
+
+
+def check_speech_keys(settings: Settings) -> None:
+    """Raise :class:`ConfigError` if the chosen speech providers cannot be used.
+
+    Called at startup for real voice mode only; mock and text modes never call the
+    speech APIs, so they do not need these keys.
+    """
+    if settings.stt_provider == "deepgram" and not settings.deepgram_api_key:
+        raise ConfigError(
+            "DEEPGRAM_API_KEY is not set. Add it to .env (from https://console.deepgram.com), "
+            "or set STT_PROVIDER=sarvam."
+        )
+    if settings.tts_provider == "cartesia":
+        if not settings.cartesia_api_key:
+            raise ConfigError(
+                "CARTESIA_API_KEY is not set. Add it to .env (from https://play.cartesia.ai), "
+                "or set TTS_PROVIDER=sarvam."
+            )
+        if not settings.cartesia_voice_id:
+            raise ConfigError(
+                "CARTESIA_VOICE_ID is not set. List voices with "
+                "'python tools/try_cartesia.py --list-voices' and put one id in .env."
+            )
+        if settings.tts_sample_rate not in CARTESIA_SAMPLE_RATES:
+            raise ConfigError(
+                f"TTS_SAMPLE_RATE must be one of {CARTESIA_SAMPLE_RATES} for Cartesia, "
+                f"got {settings.tts_sample_rate}"
+            )
 
 
 def save_env_values(values: Mapping[str, str], env_file: Path = ENV_FILE) -> None:

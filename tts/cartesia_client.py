@@ -178,19 +178,33 @@ class CartesiaTTS:
         body = self.payload(sentence, language)
         for attempt in range(1, attempts + 1):
             produced = False
+            start = time.perf_counter()
+            first_ms: float | None = None
+            size = 0
             try:
                 with self._http.stream("POST", BYTES_PATH, json=body) as response:
+                    headers_ms = (time.perf_counter() - start) * 1000
                     if response.status_code != 200:
                         response.read()
                         raise CartesiaError(_describe(response), response.status_code)
                     job.add_cancel_hook(response.close)
                     try:
                         for pcm in _pcm_chunks(response.iter_bytes()):
+                            if first_ms is None:
+                                first_ms = (time.perf_counter() - start) * 1000
                             produced = True
+                            size += len(pcm)
                             if not job.put(pcm):
                                 return False
                     finally:
                         job.remove_cancel_hook(response.close)
+                logger.info(
+                    "Cartesia sentence (%d chars, %s): headers %.0f ms, first audio %s ms, "
+                    "%.1f s audio, %.0f ms total",
+                    len(sentence), body["language"], headers_ms,
+                    f"{first_ms:.0f}" if first_ms is not None else "-",
+                    size / 2 / self.sample_rate, (time.perf_counter() - start) * 1000,
+                )
                 return not job.cancelled
             except (CartesiaError, httpx.HTTPError) as exc:
                 if job.cancelled:

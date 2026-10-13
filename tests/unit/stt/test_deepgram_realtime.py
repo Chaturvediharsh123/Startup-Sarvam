@@ -83,7 +83,7 @@ def test_url_and_auth(settings: Settings) -> None:
     url = seen["url"]
     assert url.startswith("wss://api.deepgram.com/v1/listen?")
     for part in ("model=nova-3", "language=multi", "encoding=linear16", "sample_rate=16000",
-                 "interim_results=true", "endpointing=500", "utterance_end_ms=1000",
+                 "interim_results=true", "endpointing=800", "utterance_end_ms=1000",
                  "vad_events=true"):
         assert part in url, part
     assert seen["headers"] == {"Authorization": f"Token {KEY}"}
@@ -189,10 +189,10 @@ def test_local_silence_final_drops_late_server_text(settings: Settings) -> None:
     stt = rec.stt(settings)
     stt.handle_message(results("Chrome kholo", is_final=False))
     silence = b"\x00\x00" * 1600  # 100 ms
-    assert stt.local_silence_ms == 2000  # endpointing 500 + utterance_end 1000 + 500
-    for _ in range(19):  # 1.9 s: Deepgram's own signals still have time, no local final
+    assert stt.local_silence_ms == 2300  # endpointing 800 + utterance_end 1000 + 500
+    for _ in range(22):  # 2.2 s: Deepgram's own signals still have time, no local final
         assert stt._silence.feed(silence) is None
-    text = stt._silence.feed(silence)  # 2.0 s
+    text = stt._silence.feed(silence)  # 2.3 s
     assert text == "Chrome kholo"
     stt._local_final(text)
     assert rec.final == [("Chrome kholo", None)]

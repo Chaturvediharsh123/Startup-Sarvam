@@ -2,7 +2,16 @@
 #
 # Each key is the lower-case name of an .env setting: `history_turns: 4` here is
 # the same as `HISTORY_TURNS=4` in .env. Precedence: this file < .env < environment.
-# The API key is NEVER put here; it lives only in .env (SARVAM_API_KEY).
+# API keys are NEVER put here; they live only in .env (SARVAM_API_KEY,
+# DEEPGRAM_API_KEY, CARTESIA_API_KEY).
+
+speech:                            # ADR 0009
+  stt_provider: deepgram           # deepgram | sarvam
+  tts_provider: cartesia           # cartesia | sarvam
+  deepgram_model: nova-3
+  deepgram_language: hi            # live streaming: hi | multi | en (push-to-talk uses multi)
+  cartesia_model: sonic-3.6        # pin a dated snapshot in production
+  # cartesia_voice_id is set in .env (CARTESIA_VOICE_ID)
 
 sarvam:
   sarvam_stt_realtime_model: saaras:v3-realtime
@@ -22,7 +31,7 @@ audio:
 
 stt:
   language_hint: ""                # empty = auto-detect; e.g. hi-IN
-  vad_silence_ms: 500              # server end-of-speech pause
+  vad_silence_ms: 800              # end-of-speech pause; 500 cut sentences at natural mid-sentence pauses
   local_silence_ms: 900            # local backup if the server VAD misses the end
   stt_fallback_after: 3            # failed reconnects before switching to push-to-talk
   wake_word: ""                    # empty = off
