@@ -274,3 +274,28 @@ def test_custom_endpointing_and_empty_key(settings: Settings) -> None:
 def test_matches_protocol(settings: Settings) -> None:
     stt: SpeechToText = Recorder().stt(settings)
     assert callable(stt.run_blocking)
+
+
+def test_speech_end_carries_the_time_the_last_word_ended(settings: Settings) -> None:
+    rec = Recorder()
+    stt = rec.stt(settings)
+    second = 16000 * 2  # bytes of 16 kHz 16-bit audio
+    stt._mark_sent(second, at=100.0)  # stream reached 1.0 s at t=100.0
+    stt._mark_sent(second, at=101.0)  # 2.0 s at t=101.0
+    message = results("Notepad खोलो.", is_final=True, speech_final=True,
+                      words=[("notepad", "en"), ("खोलो", "hi")])
+    words = message["channel"]["alternatives"][0]["words"]
+    words[0].update(start=0.9, end=1.2)
+    words[1].update(start=1.25, end=1.6)
+    stt.handle_message(message)
+    end_events = [e for e in rec.events if e.startswith("speech_end")]
+    name, _, stamp = end_events[0].partition("@")
+    assert name == "speech_end"
+    assert float(stamp) == pytest.approx(100.6)  # 1.6 s into the stream
+    assert rec.final == [("Notepad खोलो.", "hi-IN")]
+
+
+def test_speech_end_without_word_times_is_plain(settings: Settings) -> None:
+    rec = Recorder()
+    rec.stt(settings).handle_message(results("Open Chrome.", is_final=True, speech_final=True))
+    assert "speech_end" in rec.events

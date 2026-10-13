@@ -1,9 +1,9 @@
 """Live check of the Deepgram streaming client (uses DEEPGRAM_API_KEY from .env).
 
 Streams the default microphone to Deepgram, shows live text as you speak and prints
-each final sentence with the time from when the live text stopped changing (about
-when you stopped speaking) to the final. ``(local backup)`` means the client's own
-silence timeout ended the sentence instead of Deepgram. Press Ctrl+C to stop.
+each final sentence with the time from when your last word ended (from Deepgram's
+word timings) to the final. ``(local backup)`` means the client's own silence
+timeout ended the sentence instead of Deepgram. Press Ctrl+C to stop.
 
 Usage::
 
@@ -50,7 +50,7 @@ def main() -> int:
     settings = load_settings(require_key=False)
 
     chunks: queue.Queue[bytes] = queue.Queue()
-    marks = {"text_changed": 0.0, "local": 0.0}
+    marks = {"text_changed": 0.0, "local": 0.0, "spoke": 0.0}
     last = {"partial": ""}
 
     def on_audio(indata: bytes, frames: int, when: object, status: object) -> None:
@@ -70,15 +70,21 @@ def main() -> int:
 
     def on_final(text: str, language: str | None) -> None:
         print(f"\r{'':<96}\rFINAL [{language}] {text}")
-        if marks["text_changed"]:
+        how = " (local backup)" if marks["local"] else ""
+        if marks["spoke"]:
+            since = (time.perf_counter() - marks["spoke"]) * 1000
+            print(f"      {since:.0f} ms after your last word ended{how}")
+        elif marks["text_changed"]:
             since = (time.perf_counter() - marks["text_changed"]) * 1000
-            how = " (local backup)" if marks["local"] else ""
             print(f"      {since:.0f} ms after the live text stopped changing{how}")
-        marks["text_changed"] = marks["local"] = 0.0
+        marks["text_changed"] = marks["local"] = marks["spoke"] = 0.0
         last["partial"] = ""
 
     def on_event(event: str) -> None:
-        if event == "local_end_of_speech":
+        name, _, stamp = event.partition("@")
+        if name in ("speech_end", "local_end_of_speech") and stamp:
+            marks["spoke"] = float(stamp)
+        if name == "local_end_of_speech":
             marks["local"] = time.perf_counter()
         elif event in ("connected", "disconnected", "fallback") or event.startswith("error:"):
             print(f"\r[{event}]")
