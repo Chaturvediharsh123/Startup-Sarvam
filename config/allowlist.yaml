@@ -1,0 +1,217 @@
+# The allow-list (PDF "Safety"): the ONLY things the assistant may do on this PC.
+#
+# Safety owns this file. Actions reads it for app names, aliases and shortcut keys,
+# but the safety guard is what enforces it. Anything not listed here is denied.
+#
+# actions:            one entry per registered action
+#   risk:             low (run) | medium (run + log) | high (spoken yes first)
+#   informational:    true when the action only reads data for a spoken answer
+#   args:             argument name -> rule. Arguments not listed are denied.
+#     kind: app            free text that must resolve to an app below
+#     kind: closable_app   like app, and the app must have process names
+#     kind: shortcut       a name from safe_shortcuts (or its key combo); never blocked
+#     kind: text           non-empty text, at most limits[<max>] characters
+#     kind: choice         one of `values`
+#     kind: int            whole number between `min` and `max`
+# apps:               app key -> how to launch, which processes close it, spoken aliases
+#   launch:           fixed target for os.startfile (exe on PATH / App Paths, or a URI)
+#   builtin:          true when Windows always has it (no install check)
+#   shortcuts:        Start Menu .lnk names (glob, case-insensitive) that prove it is installed
+#   processes:        process names close_app may end (empty = cannot be closed)
+#   aliases:          other ways users say it: misspellings, Hindi and other scripts
+# blocked_apps:       names that never resolve to an app, even by fuzzy match
+# safe_shortcuts:     name -> keys pressed together
+# blocked_key_combos: combos that are always denied (any order of keys)
+# blocked_keys:       keys that make ANY combo containing them blocked
+# limits:             maximum characters for free-text arguments
+
+version: 1
+
+actions:
+  open_app:
+    risk: low
+    args:
+      name: {kind: app}
+  close_app:
+    risk: high
+    args:
+      name: {kind: closable_app}
+  web_search:
+    risk: low
+    args:
+      query: {kind: text, max: query_max_chars}
+  youtube_search:
+    risk: low
+    args:
+      query: {kind: text, max: query_max_chars}
+  set_volume:
+    risk: low
+    args:
+      level: {kind: int, min: 0, max: 100}
+  change_volume:
+    risk: low
+    args:
+      direction: {kind: choice, values: [up, down, mute, unmute]}
+      step: {kind: int, min: 1, max: 50}
+  type_text:
+    risk: medium
+    args:
+      text: {kind: text, max: text_max_chars}
+  press_shortcut:
+    risk: medium
+    args:
+      shortcut: {kind: shortcut}
+  scroll:
+    risk: low
+    args:
+      direction: {kind: choice, values: [up, down]}
+      amount: {kind: choice, values: [small, medium, large]}
+  take_screenshot:
+    risk: low
+    args: {}
+  system_status:
+    risk: low
+    informational: true
+    args: {}
+  save_note:
+    risk: medium
+    args:
+      title: {kind: text, max: title_max_chars}
+      content: {kind: text, max: note_max_chars}
+  lock_pc:
+    risk: high
+    args: {}
+  shutdown_pc:
+    risk: high
+    args: {}
+  cancel_shutdown:
+    risk: low
+    args: {}
+  current_time:
+    risk: low
+    informational: true
+    args: {}
+
+apps:
+  notepad:
+    launch: notepad.exe
+    builtin: true
+    processes: [notepad.exe]
+    aliases: [notpad, note pad, notepad app, नोटपैड, नोटपेड, नोट पैड, நோட்பேட், నోట్‌ప్యాడ్, নোটপ্যাড]
+  calculator:
+    launch: calc.exe
+    builtin: true
+    processes: [calculatorapp.exe, calculator.exe]
+    aliases: [calc, calculater, calculator app, कैलकुलेटर, कैलक्यूलेटर, கால்குலேட்டர், కాలిక్యులేటర్, ক্যালকুলেটর]
+  paint:
+    launch: mspaint.exe
+    builtin: true
+    processes: [mspaint.exe]
+    aliases: [ms paint, mspaint, pent, पेंट, பெயிண்ட், పెయింట్, পেইন্ট]
+  file_manager:
+    launch: explorer.exe
+    builtin: true
+    processes: []  # never end explorer.exe: it would take the taskbar down
+    aliases: [file explorer, explorer, files, my computer, this pc, फाइल, फाइलें, फाइल मैनेजर, फ़ाइल मैनेजर]
+  chrome:
+    launch: chrome.exe
+    shortcuts: [google chrome]
+    processes: [chrome.exe]
+    aliases: [google chrome, crome, kroom, krome, chrom, क्रोम, गूगल क्रोम, குரோம், క్రోమ్, ಕ್ರೋಮ್, ক্রোম]
+  edge:
+    launch: msedge.exe
+    shortcuts: [microsoft edge]
+    processes: [msedge.exe]
+    aliases: [microsoft edge, ms edge, edge browser, एज, माइक्रोसॉफ्ट एज]
+  word:
+    launch: winword.exe
+    shortcuts: [word, word 20*, microsoft word*, microsoft office word*]
+    processes: [winword.exe]
+    aliases: [ms word, microsoft word, winword, vord, वर्ड, माइक्रोसॉफ्ट वर्ड]
+  excel:
+    launch: excel.exe
+    shortcuts: [excel, excel 20*, microsoft excel*, microsoft office excel*]
+    processes: [excel.exe]
+    aliases: [ms excel, microsoft excel, exel, एक्सेल, एक्सल]
+  powerpoint:
+    launch: powerpnt.exe
+    shortcuts: [powerpoint, powerpoint 20*, microsoft powerpoint*, microsoft office powerpoint*]
+    processes: [powerpnt.exe]
+    aliases: [power point, ppt, ms powerpoint, microsoft powerpoint, पावरपॉइंट, पावर पॉइंट]
+  settings:
+    launch: "ms-settings:"
+    builtin: true
+    processes: [systemsettings.exe]
+    aliases: [setting, windows settings, pc settings, सेटिंग, सेटिंग्स, அமைப்புகள், సెట్టింగ్స్]
+  camera:
+    launch: "microsoft.windows.camera:"
+    builtin: true
+    processes: [windowscamera.exe]
+    aliases: [camera app, webcam, cam, कैमरा, கேமரா, కెమెరా, ক্যামেরা]
+  photoshop:
+    launch: photoshop.exe
+    shortcuts: [adobe photoshop*]
+    processes: [photoshop.exe]
+    aliases: [adobe photoshop, photo shop, फोटोशॉप]
+
+blocked_apps:
+  - cmd
+  - cmd exe
+  - command prompt
+  - commandprompt
+  - powershell
+  - pwsh
+  - windows powershell
+  - terminal
+  - windows terminal
+  - wt
+  - regedit
+  - registry
+  - registry editor
+  - taskmgr
+  - task manager
+  - control panel
+  - mmc
+  - diskpart
+  - format
+  - bash
+  - wsl
+  - run
+  - कमांड प्रॉम्प्ट
+  - पावरशेल
+  - रजिस्ट्री
+
+safe_shortcuts:
+  save: [ctrl, s]
+  copy: [ctrl, c]
+  paste: [ctrl, v]
+  undo: [ctrl, z]
+  redo: [ctrl, y]
+  select_all: [ctrl, a]
+  new_tab: [ctrl, t]
+  close_tab: [ctrl, w]
+  refresh: [f5]
+  enter: [enter]
+  minimize_all: [win, d]
+  switch_window: [alt, tab]
+  zoom_in: [ctrl, "="]
+  zoom_out: [ctrl, "-"]
+
+blocked_key_combos:
+  - [alt, f4]
+  - [win, r]
+  - [win, x]
+  - [win, l]
+  - [ctrl, alt, delete]
+  - [ctrl, shift, esc]
+  - [shift, delete]
+  - [ctrl, delete]
+
+blocked_keys: [delete, del]
+
+limits:
+  text_max_chars: 2000
+  query_max_chars: 200
+  title_max_chars: 80
+  note_max_chars: 20000
+  app_name_max_chars: 60

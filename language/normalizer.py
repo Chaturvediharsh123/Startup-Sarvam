@@ -1,3 +1,7 @@
+"""Whitespace normalisation for transcripts (V1 language pipeline helper)."""
+
+from __future__ import annotations
+
 import re
 
 
